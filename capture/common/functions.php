@@ -340,19 +340,15 @@ function create_admin() {
 }
 
 /*
- * Record a ratelimit disturbance
+ * Record any ratelimit disturbance as it happened in the last whole hour.
  */
 
-function ratelimit_record($ratelimit, $ex_start) {
+function ratelimit_record($ratelimit) {
     $dbh = pdo_connect();
-    $sql = "insert into tcat_error_ratelimit ( type, start, end, tweets ) values ( :type, :start, :end, :ratelimit)";
+    $sql = "insert into tcat_error_ratelimit ( type, start, end, tweets ) values ( :type, date_sub(now(), interval 1 hour), now(), :ratelimit)";
     $h = $dbh->prepare($sql);
-    $ex_start = toDateTime($ex_start);
-    $ex_end = toDateTime(time());
     $type = CAPTURE;
     $h->bindParam(":type", $type, PDO::PARAM_STR);
-    $h->bindParam(":start", $ex_start, PDO::PARAM_STR);
-    $h->bindParam(":end", $ex_end, PDO::PARAM_STR);
     $h->bindParam(":ratelimit", $ratelimit, PDO::PARAM_INT);
     $h->execute();
     $dbh = false;
@@ -901,18 +897,11 @@ function capture_flush_buffer() {
 
 function capture_signal_handler_term($signo) {
 
-    global $exceeding, $ratelimit, $ex_start;
-
     logit(CAPTURE . ".error.log", "received TERM signal");
 
     capture_flush_buffer();
 
     logit(CAPTURE . ".error.log", "writing rate limit information to database");
-
-    if (isset($exceeding) && $exceeding == 1) {
-        ratelimit_record($ratelimit, $ex_start);
-    }
-
     logit(CAPTURE . ".error.log", "exiting now on TERM signal");
 
     exit(0);
@@ -1808,11 +1797,11 @@ function tracker_run() {
         logit(CAPTURE . ".error.log", "geoPHP functions are not yet available, see documentation for instructions");
     }
 
-    global $ratelimit, $exceeding, $ex_start, $last_insert_id;
+    global $ratelimit_at_minute0, $ratelimit_registered;
+    global $last_insert_id;
 
-    $ratelimit = 0;     // rate limit counter since start of script
-    $exceeding = 0;     // are we exceeding the rate limit currently?
-    $ex_start = 0;      // time at which rate limit started being exceeded
+    $ratelimit_at_minute0 = -1;
+    $ratelimit_registered = -1;
     $last_insert_id = -1;
 
     global $twitter_consumer_key, $twitter_consumer_secret, $twitter_user_token, $twitter_user_secret, $lastinsert;
@@ -1921,33 +1910,33 @@ function tracker_streamCallback($data, $length, $metrics) {
 
         // handle rate limiting
         if (array_key_exists('limit', $data)) {
-            global $ratelimit, $exceeding, $ex_start;
             if (isset($data['limit'][CAPTURE])) {
                 $current = $data['limit'][CAPTURE];
-                if ($current > $ratelimit) {
-                    // currently exceeding rate limit
-                    if (!$exceeding) {
-                        // new disturbance!
-                        $ex_start = time();
-                        ratelimit_report_problem();
-                        // logit(CAPTURE . ".error.log", "you have hit a rate limit. consider reducing your query bin sizes");
+                if ($current) {
+                    // rate limits are in play during this session
+                    global $ratelimit_at_minute0, $ratelimit_registered;
+                    // read the minute of the current hour without leading zero
+                    $minutes = ltrim(date("i", time()), '0');
+                    if ($minutes == '') {
+                        $minutes = '0';
                     }
-                    $ratelimit = $current;
-                    $exceeding = 1;
-
-                    if (time() > ($ex_start + RATELIMIT_SILENCE * 6)) {
-                        // every half an hour (or: heartbeat x 6), record, but keep the exceeding flag set
-                        ratelimit_record($ratelimit, $ex_start);
-                        $ex_start = time();
+                    // at minute 0 of every hour, we register the rate limit counter as early as possible
+                    if ($minutes > 0) {
+                        $ratelimit_registered = 0;
+                    } else {
+                        if ($ratelimit_registered == -1) {
+                            // this is first time we reach minute 0 - we will not report on anything
+                            $ratelimit_at_minute0 = $current;
+                            $ratelimit_registered = 1;
+                        } elseif ($ratelimit_registered == 0) {
+                            // we now have rate limit information for the last whole hour
+                            ratelimit_record($current - $ratelimit_at_minute0);
+                            ratelimit_report_problem();
+                            $ratelimit_at_minute0 = $current;
+                            $ratelimit_registered = 1;
+                        }
                     }
-                } elseif ($exceeding && time() < ($ex_start + RATELIMIT_SILENCE)) {
-                    // we are now no longer exceeding the rate limit
-                    // to avoid flip-flop we only reset our values after the minimal heartbeat has passed
-                    // store rate limit disturbance information in the database
-                    ratelimit_record($ratelimit, $ex_start);
-                    $ex_start = 0;
-                    $exceeding = 0;
-                }
+                } 
             }
             unset($data['limit']);
         }
