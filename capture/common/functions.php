@@ -393,9 +393,9 @@ function ratelimit_report_problem() {
         if ($row = mysql_fetch_assoc($result)) {
             if (isset($row['cnt']) && $row['cnt'] > 0) {
                 create_error_logs();    /* we need the tcat_emails table */
-                $sql = "select max(ts) as max from tcat_emails where template = 'ratelimit' and ts > date_sub(now(), interval " . RATELIMIT_MAIL_HOURS . " hour) order by ts desc limit 1";
+                $sql = "select ts from tcat_emails where template = 'ratelimit' and ts > date_sub(now(), interval " . RATELIMIT_MAIL_HOURS . " hour) order by ts desc limit 1";
                 $sqlresults = mysql_query($sql);
-                if (mysql_num_rows($sqlresults) > 0) {
+                if (mysql_num_rows($sqlresults) == 0) {
                     /* send e-mail and register time of the action */
                     $sql = "insert into tcat_emails ( template, ts ) values ( 'ratelimit', now() )";
                     $result = mysql_query($sql);
