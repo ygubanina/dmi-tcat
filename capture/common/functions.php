@@ -398,8 +398,7 @@ function ratelimit_report_problem() {
                 if (mysql_num_rows($sqlresults) > 0) {
                     /* send e-mail and register time of the action */
                     $sql = "insert into tcat_emails ( template, ts ) values ( 'ratelimit', now() )";
-                    $h = $dbh->prepare($sql);
-                    $h->execute();
+                    $result = mysql_query($sql);
                     global $mail_to;
                     mail($mail_to, 'DMI-TCAT rate limit has been reached (server: ' . getHostName() . ')', 'The script running the ' . CAPTURE . ' query has hit a rate limit while talking to the Twitter API. Twitter is not allowing you to track more than 1% of its total traffic at any time. This means that the number of tweets exceeding the barrier are being dropped. Consider reducing the size of your query bins and reducing the number of terms and users you are tracking.' . "\n\n" .
                             'This may be a temporary or a structural problem. Please look at the webinterface for more details. Rate limit statistics on the website are historic, however. Consider this message indicative of a current issue. This e-mail will not be repeated for at least ' . RATELIMIT_MAIL_HOURS . ' hours.', 'From: no-reply@dmitcat');
