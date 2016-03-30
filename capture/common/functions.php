@@ -1920,7 +1920,20 @@ function tracker_streamCallback($data, $length, $metrics) {
                     if ($minutes == '') {
                         $minutes = '0';
                     }
-                    // at minute 0 of every hour, we register the rate limit counter as early as possible
+
+                    /*
+                     * Rate limit recording.
+                     *
+                     * At minute 0 of every hour, we register the rate limit counter as early as possible, but it should occur inside this minute.
+                     * We register the difference in the tweets that where ratelimited (as indicated by Twitter) from the previous hour.
+                     *
+                     * Because the clocking mechanism is implemented in the processtweets() callback function, this code will not be effective
+                     * in a zero load or very low-volume traffic situation. But we are talking about rate limits, which by definition implies
+                     * heavy traffic. The only caveat is that we do not have rows with zeros (ie. no tweets were ratelimited). The analysis
+                     * front-end should account for this when making charts or exporting rate limit data.
+                     *
+                     */
+                    
                     if ($minutes > 0) {
                         $ratelimit_registered = 0;
                     } else {
