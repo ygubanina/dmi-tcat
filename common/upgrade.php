@@ -586,7 +586,219 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
         }
     }
 
+    // 05/04/2016 Re-assemble historical TCAT ratelimit information to keep appropriate interval records
 
+    // Test if a reconstruction is neccessary
+
+    $already_updated = true;
+
+    $roles = array ( 'track', 'follow' );
+
+    $incrementals = 0;
+    $chaotics = 0;
+
+    foreach ($roles as $role) {
+        $sql = "select id, `type` as role, tweets from tcat_error_ratelimit where `type` = '$role' order by id desc";
+        $rec = $dbh->prepare($sql);
+        $rec->execute();
+        $first = true;
+        $last_record = -1;
+        while ($res = $rec->fetch()) {
+            $tweets = $res['tweets'];
+            if ($first) {
+                $last_record = $tweets;
+                $first = false;
+            } else {
+                if ($tweets < $last_record) {
+                    $incrementals++;
+                } else {
+                    $chaotics++;
+                }
+                $last_record = $tweets;
+            }
+        }
+    }
+
+    // The old registration style had an incremental ratelimit (except when the server process itself restarted); it is extremily unlikely to get such an ordering by chance
+
+    if ($chaotics < $incrementals && $chaotics > 100 && $incrementals > 100) {
+        $already_updated = false;
+    }
+
+    if ($already_updated == false) {
+        $bin_mysqldump = get_executable("mysqldump");
+        if ($bin_mysqldump === null) {
+            logit($logtarget, "The mysqldump binary appears to be missing. Did you install the MySQL client utilities? Some upgrades will not work without this utility.");
+            $already_updated = true;
+        }
+        $bin_gzip = get_executable("gzip");
+        if ($bin_gzip === null) {
+            logit($logtarget, "The gzip binary appears to be missing. Please lookup this utility in your software repository. Some upgrades will not work without this utility.");
+            $already_updated = true;
+        }
+    }
+
+    if ($already_updated == false) {
+
+        $ans = '';
+        if ($interactive == false) {
+            // require auto-upgrade level 2
+            if ($aulevel > 1) {
+                $ans = 'a';
+            } else {
+                $ans = 'SKIP';
+            }
+        } else {
+            $ans = cli_yesnoall("Re-assemble historical TCAT ratelimit information to keep appropriate interval records (this could take a long time, but it does not block or interrupt running capture)", 2);
+        }
+        if ($ans == 'y' || $ans == 'a') {
+            
+            global $dbuser, $dbpass, $database, $hostname;
+            putenv('MYSQL_PWD=' . $dbpass);     /* this avoids having to put the password on the command-line */
+
+            $ts = time();
+            logit($logtarget, "Backuping existing tcat_error_ratelimit information to your analysis/cache directory.");
+            $cmd = "$bin_mysqldump --default-character-set=utf8mb4 -u$dbuser -h $hostname $database tcat_error_ratelimit > " . __DIR__ . "/../analysis/cache/tcat_error_ratelimit_$ts.sql";
+            system($cmd);
+            logit($logtarget, $cmd);
+            $cmd = "$bin_gzip " .  __DIR__ . "/../analysis/cache/tcat_error_ratelimit_$ts.sql";
+            logit($logtarget, $cmd);
+            system($cmd);
+
+            $sql = "create temporary table if not exists tcat_error_ratelimit_upgrade ( id bigint, `type` varchar(32), start datetime not null, end datetime not null, tweets bigint not null, primary key(id, type), index(type), index(start), index(end) ) ENGINE=MyISAM";
+            $rec = $dbh->prepare($sql);
+            $rec->execute();
+
+            $sql = "select now() as now, unix_timestamp(now()) as now_unix";
+            $rec = $dbh->prepare($sql);
+            $rec->execute();
+            $results = $rec->fetch(PDO::FETCH_ASSOC);
+            $now = $results['now'];
+            $now_unix = $results['now_unix'];
+
+            $sql = "select unix_timestamp(min(start)) as beginning_unix from tcat_error_ratelimit";
+            $rec = $dbh->prepare($sql);
+            $rec->execute();
+            $results = $rec->fetch(PDO::FETCH_ASSOC);
+            $beginning_unix = $results['beginning_unix'];
+
+            $difference_minutes = round(($now_unix / 60 - $beginning_unix / 60) + 1);
+            logit($logtarget, "We have ratelimit information on this server for the past $difference_minutes minutes.");
+
+            $roles = unserialize(CAPTUREROLES);
+            foreach ($roles as $role) {
+                logit($logtarget, "Restarting active capture role: $role");
+                $query = "INSERT INTO tcat_controller_tasklist ( task, instruction ) values ( '$role', 'reload' )";
+                $rec = $dbh->prepare($query);
+                $rec->execute();
+            }
+
+            logit($logtarget, "Sleep a minute to ensure the server is recording rate limits in the new style");
+            sleep(61);
+
+            logit($logtarget, "Processing everything before MySQL date $now");
+
+            // zero all minutes for the past 2.5 years maximally, or until the beginning of our capture era, for roles track and follow
+
+            $max_minutes = max(1314000, $difference_minutes);
+
+            for ($i = 1; $i <= $max_minutes; $i++) {
+                $sql = "insert into tcat_error_ratelimit_upgrade ( id, `type`, `start`, `end`, `tweets` ) values ( $i, 'track',
+                                    date_sub( date_sub('$now', interval $i minute), interval second(date_sub('$now', interval $i minute)) second ),
+                                    date_sub( date_sub('$now', interval " . ($i - 1) . " minute), interval second(date_sub('$now', interval " . ($i - 1) . " minute)) second ),
+                                    0 )";
+                $rec = $dbh->prepare($sql);
+                $rec->execute();
+                $sql = "insert into tcat_error_ratelimit_upgrade ( id, `type`, `start`, `end`, `tweets` ) values ( $i, 'follow',
+                                    date_sub( date_sub('$now', interval $i minute), interval second(date_sub('$now', interval $i minute)) second ),
+                                    date_sub( date_sub('$now', interval " . ($i - 1) . " minute), interval second(date_sub('$now', interval " . ($i - 1) . " minute)) second ),
+                                    0 )";
+                $rec = $dbh->prepare($sql);
+                $rec->execute();
+                if ($i % ($max_minutes/100) == 0) {
+                    logit($logtarget, "Creating temporary table " . round($i/$max_minutes * 100)  . "% completed");
+                } 
+            }
+
+            logit($logtarget, "Building a new ratelimit table in temporary space");
+
+            $roles = array ( 'track', 'follow' );
+
+            foreach ($roles as $role) {
+
+                logit($logtarget, "Handle rate limits for role $role");
+                $sql = "select id, `type` as role, date_format(start, '%k') as measure_hour, date_format(start, '%i') as measure_minute, tweets as incr_record from tcat_error_ratelimit where `type` = '$role' order by id desc";
+                $rec = $dbh->prepare($sql);
+                $rec->execute();
+                $consolidate_hour = -1;
+                $consolidate_minute = -1;
+                $consolidate_max_id = -1;
+                while ($res = $rec->fetch()) {
+                    $measure_minute = ltrim($res['measure_minute']);
+                    if ($measure_minute == '') {
+                        $measure_minute = 0;
+                    }
+                    $measure_hour = $res['measure_hour'];
+                    if ($measure_minute != $consolidate_minute || $measure_hour != $consolidate_hour) {
+                        if ($consolidate_minute == -1) {
+                            // first row received
+                            $consolidate_minute = $measure_minute;
+                            $consolidate_hour = $measure_hour;
+                            $consolidate_max_id = $res['id'];
+                        } else {
+                            // we consolidate around the consolidate minute
+                            $sql = "select max(tweets) as record_max, min(tweets) as record_min, min(start) as start, unix_timestamp(min(start)) as start_unix, max(end) as end, unix_timestamp(max(end)) as end_unix from tcat_error_ratelimit where `type` = '$role' and id <= $consolidate_max_id and id >= " . $res['id'];
+                            $rec2 = $dbh->prepare($sql);
+                            $rec2->execute();
+                            while ($res2 = $rec2->fetch()) {
+                                $record_max = $res2['record_max'];
+                                $record_min = $res2['record_min'];
+                                $record = $record_max - $record_min;
+                                if ($record > 0) {
+                                    ratelimit_smoother($dbh, $role, $res2['start'], $res2['end'], $res2['start_unix'], $res2['end_unix'], $record);
+                                }
+                            }
+                            $consolidate_minute = $measure_minute;
+                            $consolidate_hour = $measure_hour;
+                            $consolidate_max_id = $res['id'];
+                        }
+                    }
+                }
+                if ($consolidate_minute != -1) {
+                    // we consolidate the last minute
+                    $sql = "select max(tweets) as record_max, min(tweets) as record_min, min(start) as start, unix_timestamp(min(start)) as start_unix, max(end) as end, unix_timestamp(max(end)) as end_unix from tcat_error_ratelimit where `type` = '$role' and id <= $consolidate_max_id";
+                    $rec2 = $dbh->prepare($sql);
+                    $rec2->execute();
+                    while ($res2 = $rec2->fetch()) {
+                        $record_max = $res2['record_max'];
+                        $record_min = $res2['record_min'];
+                        $record = $record_max - $record_min;
+                        if ($record > 0) {
+                            ratelimit_smoother($dbh, $role, $res2['start'], $res2['end'], $res2['start_unix'], $res2['end_unix'], $record);
+                        }
+                    }
+                }
+            }
+
+            $sql = "delete from tcat_error_ratelimit where start < '$now' or end < '$now'";
+            $rec = $dbh->prepare($sql);
+            logit($logtarget, "Removing old records from tcat_error_ratelimit (DO NOT INTERRUPT YOUR UPGRADE PROCESS OR DATA WILL BE LOST)");
+            $rec->execute();
+
+            // NOTE: after this operation, the auto_increment field can no longer safely be considered to be ordered by time
+
+            $sql = "insert into tcat_error_ratelimit ( `type`, start, end, tweets ) select `type`, start, end, tweets from tcat_error_ratelimit_upgrade";
+            $rec = $dbh->prepare($sql);
+            logit($logtarget, "Inserting new records into tcat_error_ratelimit (DO NOT INTERRUPT YOUR UPGRADE PROCESS OR DATA WILL BE LOST)");
+            $rec->execute();
+
+            logit($logtarget, "Rebuilding of tcat_error_ratelimit has finished");
+            $sql = "drop table tcat_error_ratelimit_upgrade";
+            $rec = $dbh->prepare($sql);
+            $rec->execute();
+        }
+
+    }
 
     // End of upgrades
 
@@ -655,4 +867,24 @@ if (env_is_cli()) {
 
 }
 
+/*
+ * Smoothing function for ratelimit re-assembly
+ */
 
+function ratelimit_smoother($dbh, $role, $start, $end, $start_unix, $end_unix, $tweets) {
+    $minutes_difference = $end_unix / 60 - $start_unix / 60;
+    $avg_tweets_per_minute = round($tweets / $minutes_difference);
+    if ($avg_tweets_per_minute == 0) return;
+    $sql = "update tcat_error_ratelimit_upgrade set tweets = $avg_tweets_per_minute where `type` = '$role' and start >= '$start' and end <= '$end'";
+    $rec = $dbh->prepare($sql);
+    $rec->execute();
+}
+
+function get_executable($binary) {
+    $where = `which $binary`;
+    $where = trim($where);
+    if (!is_string($where) || !file_exists($where)) {
+        return null;
+    }
+    return $where;
+}
