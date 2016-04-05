@@ -377,13 +377,12 @@ function ratelimit_holefiller($minutes) {
         $sql = "select count(*) as cnt from tcat_error_ratelimit where type = '" . CAPTURE . "' and 
                         start >= date_sub(date_sub(date_sub(now(), interval $i minute), interval second(date_sub(now(), interval $i minute)) second), interval 1 minute) and
                         end <= date_sub(date_sub(now(), interval " . ($i - 1) . " minute), interval second(date_sub(now(), interval " . ($i - 1) . " minute)) second)";
-            print "DEBUG: $sql\n";
+        logit(CAPTURE . ".error.log", "$sql");
         $h = $dbh->prepare($sql);
         $h->execute();
         $existing = false;
         while ($res = $h->fetch()) {
             if (array_key_exists('cnt', $res) && $res['cnt'] > 0) {
-                print "DEBUG EXISTING SO STOP\n";
                 $existing = true; break;
             }
         }
@@ -392,7 +391,6 @@ function ratelimit_holefiller($minutes) {
         // fill in the hole
 
         $sql = "insert into tcat_error_ratelimit ( type, start, end, tweets ) values ( :type, date_sub(date_sub(date_sub(now(), interval $i minute), interval second(date_sub(now(), interval $i minute)) second), interval 1 minute), date_sub(date_sub(now(), interval " . ($i - 1) . " minute), interval second(date_sub(now(), interval " . ($i - 1) . " minute)) second), 0)";
-                print "DEBUG $sql\n";
         logit(CAPTURE . ".error.log", "$sql");
         $h = $dbh->prepare($sql);
         $type = CAPTURE;
