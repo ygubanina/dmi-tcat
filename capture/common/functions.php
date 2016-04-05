@@ -1996,6 +1996,7 @@ function tracker_streamCallback($data, $length, $metrics) {
             // we now have rate limit information for the last minute
             ratelimit_record($rl_current_record);
             if ($rl_current_record > 0) {
+                logit(CAPTURE . ".error.log", "(debug) recording a rate limit of $rl_current_record for the previous minute and resetting counter");
                 ratelimit_report_problem();
                 $rl_current_record = 0;
             }
