@@ -61,6 +61,15 @@ function quoteIdent($field) {
     return "`" . str_replace("`", "``", $field) . "`";
 }
 
+// read the minute of the current hour without leading zero
+function get_current_minute() {
+    $minutes = ltrim(date("i", time()), '0');
+    if ($minutes == '') {
+        $minutes = '0';
+    }
+    return intval($minutes);
+}
+
 function create_bin($bin_name, $dbh = false) {
     try {
 
@@ -340,17 +349,57 @@ function create_admin() {
 }
 
 /*
- * Record any ratelimit disturbance as it happened in the last whole hour.
+ * Record any ratelimit disturbance as it happened in the last minute
  */
 
 function ratelimit_record($ratelimit) {
     $dbh = pdo_connect();
-    $sql = "insert into tcat_error_ratelimit ( type, start, end, tweets ) values ( :type, date_sub(now(), interval 1 hour), now(), :ratelimit)";
+    $sql = "insert into tcat_error_ratelimit ( type, start, end, tweets ) values ( :type, date_sub(date_sub(now(), interval second(now()) second), interval 1 minute), date_sub(now(), interval second(now()) second), :ratelimit)";
     $h = $dbh->prepare($sql);
     $type = CAPTURE;
     $h->bindParam(":type", $type, PDO::PARAM_STR);
     $h->bindParam(":ratelimit", $ratelimit, PDO::PARAM_INT);
     $h->execute();
+    $dbh = false;
+}
+
+/*
+ * Zero non-existing ratelimit table rows backwards-in-time
+ */
+
+function ratelimit_holefiller($minutes) {
+    if ($minutes <= 1) return;
+    $dbh = pdo_connect();
+    for ($i = 2; $i <= $minutes; $i++) {
+
+        // test if a rate limit record already exists in the database, and if so: break
+
+        $sql = "select count(*) as cnt from tcat_error_ratelimit where type = '" . CAPTURE . "' and 
+                        start >= date_sub(date_sub(date_sub(now(), interval $i minute), interval second(date_sub(now(), interval $i minute)) second), interval 1 minute) and
+                        end <= date_sub(date_sub(now(), interval " . ($i - 1) . " minute), interval second(date_sub(now(), interval " . ($i - 1) . " minute)) second)";
+            print "DEBUG: $sql\n";
+        $h = $dbh->prepare($sql);
+        $h->execute();
+        $existing = false;
+        while ($res = $h->fetch()) {
+            if (array_key_exists('cnt', $res) && $res['cnt'] > 0) {
+                print "DEBUG EXISTING SO STOP\n";
+                $existing = true; break;
+            }
+        }
+        if ($existing == true) break;
+
+        // fill in the hole
+
+        $sql = "insert into tcat_error_ratelimit ( type, start, end, tweets ) values ( :type, date_sub(date_sub(date_sub(now(), interval $i minute), interval second(date_sub(now(), interval $i minute)) second), interval 1 minute), date_sub(date_sub(now(), interval " . ($i - 1) . " minute), interval second(date_sub(now(), interval " . ($i - 1) . " minute)) second), 0)";
+                print "DEBUG $sql\n";
+        logit(CAPTURE . ".error.log", "$sql");
+        $h = $dbh->prepare($sql);
+        $type = CAPTURE;
+        $h->bindParam(":type", $type, PDO::PARAM_STR);
+        $h->execute();
+
+    }
     $dbh = false;
 }
 
@@ -901,7 +950,6 @@ function capture_signal_handler_term($signo) {
 
     capture_flush_buffer();
 
-    logit(CAPTURE . ".error.log", "writing rate limit information to database");
     logit(CAPTURE . ".error.log", "exiting now on TERM signal");
 
     exit(0);
@@ -1797,12 +1845,14 @@ function tracker_run() {
         logit(CAPTURE . ".error.log", "geoPHP functions are not yet available, see documentation for instructions");
     }
 
-    global $ratelimit_at_minute0, $ratelimit_registered;
+    global $rl_current_record, $rl_registering_minute;
     global $last_insert_id;
+    global $tracker_started_at;
 
-    $ratelimit_at_minute0 = -1;
-    $ratelimit_registered = -1;
+    $rl_current_record = 0;
+    $rl_registering_minute = get_current_minute();
     $last_insert_id = -1;
+    $tracker_started_at = time();
 
     global $twitter_consumer_key, $twitter_consumer_secret, $twitter_user_token, $twitter_user_secret, $lastinsert;
 
@@ -1908,51 +1958,54 @@ function tracker_streamCallback($data, $length, $metrics) {
             }
         }
 
-        // handle rate limiting
-        if (array_key_exists('limit', $data)) {
-            if (isset($data['limit'][CAPTURE])) {
-                $current = $data['limit'][CAPTURE];
-                if ($current) {
-                    // rate limits are in play during this session
-                    global $ratelimit_at_minute0, $ratelimit_registered;
-                    // read the minute of the current hour without leading zero
-                    $minutes = ltrim(date("i", time()), '0');
-                    if ($minutes == '') {
-                        $minutes = '0';
-                    }
+        // handle rate limiting at intervals of a single minute
 
-                    /*
-                     * Rate limit recording.
-                     *
-                     * At minute 0 of every hour, we register the rate limit counter as early as possible, but it should occur inside this minute.
-                     * We register the difference in the tweets that where ratelimited (as indicated by Twitter) from the previous hour.
-                     *
-                     * Because the clocking mechanism is implemented in the processtweets() callback function, this code will not be effective
-                     * in a zero load or very low-volume traffic situation. But we are talking about rate limits, which by definition implies
-                     * heavy traffic. The only caveat is that we do not have rows with zeros (ie. no tweets were ratelimited). The analysis
-                     * front-end should account for this when making charts or exporting rate limit data.
-                     *
-                     */
-                    
-                    if ($minutes > 0) {
-                        $ratelimit_registered = 0;
-                    } else {
-                        if ($ratelimit_registered == -1) {
-                            // this is first time we reach minute 0 - we will not report on anything
-                            $ratelimit_at_minute0 = $current;
-                            $ratelimit_registered = 1;
-                        } elseif ($ratelimit_registered == 0) {
-                            // we now have rate limit information for the last whole hour
-                            ratelimit_record($current - $ratelimit_at_minute0);
-                            ratelimit_report_problem();
-                            $ratelimit_at_minute0 = $current;
-                            $ratelimit_registered = 1;
-                        }
-                    }
-                } 
+        global $rl_current_record, $rl_registering_minute;
+        global $tracker_started_at;
+
+        $current = 0;
+        $current_minute = get_current_minute();
+
+        // we keep a a counter of the nr. of tweets rate limited and reset it at intervals of one minute
+        // read possible rate limit information from Twitter
+
+        if (array_key_exists('limit', $data) && isset($data['limit'][CAPTURE])) {
+            $current = $data['limit'][CAPTURE];
+            $rl_current_record += $current;
+            logit(CAPTURE . ".error.log", "(debug) at measurement minute $current_minute, we are reading $current tweets rate limited (record grows to $rl_current_record)");
+        } else {
+//            logit(CAPTURE . ".error.log", "(debug) at measurement minute $current_minute, we have no rate limits reached (record stays at $rl_current_record)");
+            $current = $rl_previous_record;
+        }
+
+
+        if ($rl_registering_minute != $current_minute) {
+
+            if ($current_minute == 0 && $rl_registering_minute < 59 ||
+                $current_minute > 0 && $current_minute < $rl_registering_minute ||
+                $current_minute > $rl_registering_minute + 1) {
+                // there was a more than 1 minute silence
+                logit(CAPTURE . ".error.log", "(debug) at measurement minute $current_minute, we noticed a more than one minute silence (previous minute was $rl_registering_minute)");
+                $tracker_running = round((time() - $tracker_started_at) / 60);
+                logit(CAPTURE . ".error.log", "(debug) the tracker itself is running $tracker_running minutes, now filling holes");
+                ratelimit_holefiller($tracker_running);
             }
+
+            $rl_registering_minute = $current_minute;
+
+            // we now have rate limit information for the last minute
+            ratelimit_record($rl_current_record);
+            if ($rl_current_record > 0) {
+                ratelimit_report_problem();
+                $rl_current_record = 0;
+            }
+
+        }
+
+        if (array_key_exists('limit', $data)) {
             unset($data['limit']);
         }
+
 
         if (empty($data))
             return;   // sometimes we only get rate limit info
