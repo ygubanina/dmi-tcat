@@ -42,11 +42,11 @@ function geophp_sane() {
 function create_error_logs() {
     $dbh = pdo_connect();
 
-    $sql = 'create table if not exists tcat_error_ratelimit ( id bigint auto_increment, type varchar(32), start datetime not null, end datetime not null, tweets bigint not null, primary key(id), index(type), index(start), index(end) )';
+    $sql = 'create table if not exists tcat_error_ratelimit ( id bigint auto_increment, type varchar(32), start datetime not null, end datetime not null, tweets bigint not null, primary key(id), index(type), index(start), index(end) ) ENGINE=MyISAM';
     $h = $dbh->prepare($sql);
     $h->execute();
 
-    $sql = 'create table if not exists tcat_error_gap ( id bigint auto_increment, type varchar(32), start datetime not null, end datetime not null, primary key(id), index(type), index(start), index(end) )';
+    $sql = 'create table if not exists tcat_error_gap ( id bigint auto_increment, type varchar(32), start datetime not null, end datetime not null, primary key(id), index(type), index(start), index(end) ) ENGINE=MyISAM';
     $h = $dbh->prepare($sql);
     $h->execute();
 
@@ -1967,7 +1967,7 @@ function tracker_streamCallback($data, $length, $metrics) {
         // we keep a a counter of the nr. of tweets rate limited and reset it at intervals of one minute
         // read possible rate limit information from Twitter
 
-        if (array_key_exists('limit', $data) && isset($data['limit'][CAPTURE])) {
+        if (array_key_exists('limit', $data) && isset($data['limit']['track'])) {
             $current = $data['limit'][CAPTURE];
             $rl_current_record += $current;
             logit(CAPTURE . ".error.log", "(debug) at measurement minute $current_minute, we are reading $current tweets rate limited (record grows to $rl_current_record)");
