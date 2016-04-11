@@ -755,13 +755,7 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                                 $consolidate_minute = $measure_minute;
                                 $consolidate_hour = $measure_hour;
                                 $consolidate_max_id = $res['id'];
-                                    // DEBUG BEGIN HERE
-                                    print "(debug) first row received with id " . $res['id'] . " start hour $consolidate_hour and minute $consolidate_minute\n";
-                                    // DEBUG END HERE
                             } else {
-                                    // DEBUG BEGIN HERE
-                                    print "(debug) second row received with id " . $res['id'] . " end hour $measure_hour and minute $measure_minute\n";
-                                    // DEBUG END HERE
                                 $controller_restart_detected = false;
                                 // extra check to handle controller resets
                                 $sql = "select max(tweets) as record_max, min(tweets) as record_min, min(start) as start, unix_timestamp(min(start)) as start_unix, max(start) as end, unix_timestamp(max(start)) as end_unix from tcat_error_ratelimit where `type` = '$role' and id <= $consolidate_max_id and id >= " . $res['id'] . " and ( select tweets from tcat_error_ratelimit where id = $consolidate_max_id ) > ( select tweets from tcat_error_ratelimit where id = " . $res['id'] . " )";
@@ -770,16 +764,9 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                                 while ($res2 = $rec2->fetch()) {
                                     if ($res2['record_max'] == null) {
                                         $controller_restart_detected = true;
-                                        // DEBUG BEGIN HERE
-                                        print "(debug) controller restart detected!\n";
-                                        // DEBUG END HERE
                                     }
                                     $record_max = $res2['record_max'];
                                     $record_min = $res2['record_min'];
-                                        // DEBUG BEGIN
-                                        print "record_max = $record_max, record_min = $record_min, consolidate_hour = $consolidate_hour, measure_hour = $measure_hour\n";
-                                        print "(debug) " . abs($measure_minute - $consolidate_minute) . " minutes interval\n";
-                                        // DEBUG END HERE
                                     $record = $record_max - $record_min;
                                     if ($controller_restart_detected) {
                                         $record = 0;
@@ -902,27 +889,22 @@ if (env_is_cli()) {
 
 function ratelimit_smoother($dbh, $role, $start, $end, $start_unix, $end_unix, $tweets) {
     $minutes_difference = round($end_unix / 60 - $start_unix / 60);
-    print "(debug) updating with smoother for time period $start - $end with $tweets tweets\n";
     if ($tweets <= 0) return;
     if ($minutes_difference <= 2) {
         // TCAT is already capturing and registering time ratelimits per minute here
         // We are at the next row in the minutes table, therefore we add 1 minute to both start and end
-        print "(debug) minutes_difference = $minutes_difference, therefore updating all $tweets tweets for full time period\n";
         // We also strip the seconds
         $sql = "update tcat_error_ratelimit_upgrade set tweets = $tweets where `type` = '$role' and
                         start >= date_add( date_sub( '$start', interval second('$start') second ), interval 1 minute ) and
                         end <= date_add( '$end', interval 1 minute )";
-        print "(debug) $sql\n";
         $rec = $dbh->prepare($sql);
         $rec->execute();
     } else {
         // TCAT is registering time ratelimits per hour here
         $avg_tweets_per_minute = round($tweets / $minutes_difference);
         if ($avg_tweets_per_minute == 0) {
-            print "(debug) minutes_difference = $minutes_difference, avg_tweets_per_minute is $avg_tweets_per_minute, therefore we lose precision\n";
             return;
         }
-        print "(debug) minutes_difference = $minutes_difference, avg_tweets_per_minute is $avg_tweets_per_minute, updating for every minute in time period\n";
         $sql = "update tcat_error_ratelimit_upgrade set tweets = $avg_tweets_per_minute where `type` = '$role' and start >= date_sub( '$start', interval second('$start') second ) and end < '$end'";
         $rec = $dbh->prepare($sql);
         $rec->execute();

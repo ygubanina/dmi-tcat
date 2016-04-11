@@ -1969,10 +1969,10 @@ function tracker_streamCallback($data, $length, $metrics) {
 
         if (array_key_exists('limit', $data) && isset($data['limit']['track'])) {
             $current = $data['limit'][CAPTURE];
+            // new rate limits - grow record
             $rl_current_record += $current;
-            logit(CAPTURE . ".error.log", "(debug) at measurement minute $current_minute, we are reading $current tweets rate limited (record grows to $rl_current_record)");
         } else {
-//            logit(CAPTURE . ".error.log", "(debug) at measurement minute $current_minute, we have no rate limits reached (record stays at $rl_current_record)");
+            // we new rate limits - sustain current record
             $current = $rl_current_record;
         }
 
@@ -1982,10 +1982,8 @@ function tracker_streamCallback($data, $length, $metrics) {
             if ($current_minute == 0 && $rl_registering_minute < 59 ||
                 $current_minute > 0 && $current_minute < $rl_registering_minute ||
                 $current_minute > $rl_registering_minute + 1) {
-                // there was a more than 1 minute silence
-                logit(CAPTURE . ".error.log", "(debug) at measurement minute $current_minute, we noticed a more than one minute silence (previous minute was $rl_registering_minute)");
+                // there was a more than 1 minute silence (i.e. a response from Curl took longer than our 1 minute interval, thus we need to fill in zeros backwards in time)
                 $tracker_running = round((time() - $tracker_started_at) / 60);
-                logit(CAPTURE . ".error.log", "(debug) the tracker itself is running $tracker_running minutes, now filling holes");
                 ratelimit_holefiller($tracker_running);
             }
 
@@ -1994,7 +1992,6 @@ function tracker_streamCallback($data, $length, $metrics) {
             // we now have rate limit information for the last minute
             ratelimit_record($rl_current_record);
             if ($rl_current_record > 0) {
-                logit(CAPTURE . ".error.log", "(debug) recording a rate limit of $rl_current_record for the previous minute and resetting counter");
                 ratelimit_report_problem();
                 $rl_current_record = 0;
             }
