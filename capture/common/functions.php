@@ -1973,7 +1973,7 @@ function tracker_streamCallback($data, $length, $metrics) {
             logit(CAPTURE . ".error.log", "(debug) at measurement minute $current_minute, we are reading $current tweets rate limited (record grows to $rl_current_record)");
         } else {
 //            logit(CAPTURE . ".error.log", "(debug) at measurement minute $current_minute, we have no rate limits reached (record stays at $rl_current_record)");
-            $current = $rl_previous_record;
+            $current = $rl_current_record;
         }
 
 
