@@ -50,9 +50,21 @@ function create_error_logs() {
     $h = $dbh->prepare($sql);
     $h->execute();
 
+    /*
+     * The tcat_emails table stores information about when TCAT has sent an e-mail out to its users or administrators. The purpose of the table is primarily to prevent multiple
+     * e-mails from being sent within a configured timeframe, hence the timestamp column.
+     */
+
     $sql = 'create table if not exists tcat_emails ( id bigint auto_increment, template varchar(32), ts datetime not null, primary key(id), index(template), index(ts) )';
     $h = $dbh->prepare($sql);
     $h->execute();
+
+    /*
+     * The tcat_status variable is utilised as generic keystore to record and track aspects of this TCAT installation.
+     * This is not a configuration table. The configuration of TCAT is defined in config.php, though we may wish to allow dynamically configurable
+     * options in the future and this table would suit such a purpose.
+     * At the moment, this table is solely used by TCAT internally to store information such as wich upgrade step has been executed, etc.
+     */
 
     $sql = "CREATE TABLE IF NOT EXISTS tcat_status (
     `variable` varchar(32),
