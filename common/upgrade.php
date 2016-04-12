@@ -592,45 +592,24 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
 
     $already_updated = true;
 
-    $roles = array ( 'track', 'follow' );
+    $now = null;        // variable will store the moment the new gauge behaviour became effective
 
-    $incrementals = 0;
-    $chaotics = 0;
-
-    foreach ($roles as $role) {
-        $sql = "select id, `type` as role, tweets from tcat_error_ratelimit where `type` = '$role' order by id desc";
-        $rec = $dbh->prepare($sql);
-        $rec->execute();
-        $first = true;
-        $last_record = -1;
+    $sql = "select value, unix_timestamp(value) as value_unix from tcat_status where variable = 'ratelimit_format_modified_at'";
+    $rec = $dbh->prepare($sql);
+    if ($rec->execute() && $rec->rowCount() > 0) {
         while ($res = $rec->fetch()) {
-            $tweets = $res['tweets'];
-            if ($first) {
-                $last_record = $tweets;
-                $first = false;
-            } else {
-                if ($tweets < $last_record) {
-                    $incrementals++;
-                } else {
-                    $chaotics++;
-                }
-                $last_record = $tweets;
-            }
+            $now = $res['value'];
+            $now_unix = $res['value_unix'];
         }
     }
 
-    // The old registration style had an incremental ratelimit (except when the server process itself restarted); it is extremily unlikely to get such an ordering by chance
-
-    if ($chaotics < $incrementals && $chaotics > 100 && $incrementals > 100) {
+    $sql = "select value from tcat_status where variable = 'ratelimit_database_rebuild' and value = '1'";
+    $rec = $dbh->prepare($sql);
+    if (!$rec->execute() || $rec->rowCount() == 0) {
         $already_updated = false;
     }
-
-    // TODO: But what happens if we update the source-code, and we do not immediatly run common/upgrade.php?
-    //       We will in fact add even more complexity, because we will have two different measurement types to cope with inside the ratelimit table.
-    //       We need to prevent that somehow, before putting this source code into master.
-    //       For example: create a new table tcat_error_ratelimit_version ( version bigint ) and insert an integer, or maybe use a global table tcat_versions
-    //       ( the flexibility of our upgrade system allows us to selectively upgrade parts of the system ) and make insert behaviour dependent on that?
-    //       Or: simply stop registering ratelimits until the upgrade.php job has been ran, or the table truncated.
+    
+    $bin_mysqldump = $bin_gzip = null;
 
     if ($already_updated == false) {
         $bin_mysqldump = get_executable("mysqldump");
@@ -645,8 +624,7 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
         }
     }
 
-    if ($already_updated == false) {
-
+    if (!$already_updated && $now != null) {
         $ans = '';
         if ($interactive == false) {
             // require auto-upgrade level 2
@@ -656,7 +634,7 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                 $ans = 'SKIP';
             }
         } else {
-            $ans = cli_yesnoall("Re-assemble historical TCAT ratelimit information to keep appropriate interval records (this could take a long time, but it does not block or interrupt running capture)", 2);
+            $ans = cli_yesnoall("Re-assemble historical TCAT ratelimit information to keep appropriate interval records (this could take quite a while on long-running servers, but it does not block anything or interrupt your capture)", 2);
         }
         if ($ans == 'y' || $ans == 'a') {
             
@@ -679,13 +657,6 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                 $rec = $dbh->prepare($sql);
                 $rec->execute();
 
-                $sql = "select now() as now, unix_timestamp(now()) as now_unix";
-                $rec = $dbh->prepare($sql);
-                $rec->execute();
-                $results = $rec->fetch(PDO::FETCH_ASSOC);
-                $now = $results['now'];
-                $now_unix = $results['now_unix'];
-
                 $sql = "select unix_timestamp(min(start)) as beginning_unix from tcat_error_ratelimit";
                 $rec = $dbh->prepare($sql);
                 $rec->execute();
@@ -702,9 +673,6 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                     $rec = $dbh->prepare($query);
                     $rec->execute();
                 }
-
-                logit($logtarget, "Sleep a minute to ensure the server is recording rate limits in the new style");
-                sleep(61);
 
                 logit($logtarget, "Processing everything before MySQL date $now");
 
@@ -799,21 +767,25 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
 
                 $sql = "delete from tcat_error_ratelimit where start < '$now' or end < '$now'";
                 $rec = $dbh->prepare($sql);
-                logit($logtarget, "Removing old records from tcat_error_ratelimit (DO NOT INTERRUPT YOUR UPGRADE PROCESS OR DATA WILL BE LOST)");
+                logit($logtarget, "Removing old records from tcat_error_ratelimit (DO NOT INTERRUPT YOUR UPGRADE PROCESS)");
                 $rec->execute();
 
                 $sql = "insert into tcat_error_ratelimit ( `type`, start, end, tweets ) select `type`, start, end, tweets from tcat_error_ratelimit_upgrade order by start asc";
                 $rec = $dbh->prepare($sql);
-                logit($logtarget, "Inserting new records into tcat_error_ratelimit (DO NOT INTERRUPT YOUR UPGRADE PROCESS OR DATA WILL BE LOST)");
+                logit($logtarget, "Inserting new records into tcat_error_ratelimit (DO NOT INTERRUPT YOUR UPGRADE PROCESS)");
                 $rec->execute();
 
                 logit($logtarget, "Rebuilding of tcat_error_ratelimit has finished");
                 $sql = "drop table tcat_error_ratelimit_upgrade";
                 $rec = $dbh->prepare($sql);
                 $rec->execute();
+
+                $sql = "insert into tcat_status ( variable, value ) values ( 'ratelimit_database_rebuild', '1' )";
+                $rec = $dbh->prepare($sql);
+                $rec->execute();
+
             }
         }
-
     }
 
     // End of upgrades

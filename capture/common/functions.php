@@ -54,6 +54,24 @@ function create_error_logs() {
     $h = $dbh->prepare($sql);
     $h->execute();
 
+    $sql = "CREATE TABLE IF NOT EXISTS tcat_status (
+    `variable` varchar(32),
+    `value` varchar(1024),
+    PRIMARY KEY `variable` (`variable`)
+    ) ENGINE = MyISAM DEFAULT CHARSET = utf8mb4";
+    $create = $dbh->prepare($sql);
+    $create->execute();
+
+    $sql = "select value from tcat_status where variable = 'ratelimit_format_modified_at'";
+    $test = $dbh->prepare($sql);
+    $test->execute();
+    if ($test->rowCount() == 0) {
+        // We are registering ratelimits in the new gauge-style and store the timestamp of the start of this new behaviour
+        $sql = "insert into tcat_status ( variable, value ) values ( 'ratelimit_format_modified_at', now() )";
+        $insert = $dbh->prepare($sql);
+        $insert->execute();
+    }
+
 }
 
 // Enclose identifier in backticks; escape backticks inside by doubling them.
