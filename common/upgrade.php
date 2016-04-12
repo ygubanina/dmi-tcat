@@ -586,7 +586,7 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
         }
     }
 
-    // 05/04/2016 Re-assemble historical TCAT ratelimit information to keep appropriate interval records
+    // 05/04/2016 Re-assemble historical TCAT ratelimit information to keep appropriate interval records (see the discussion on Github: https://github.com/digitalmethodsinitiative/dmi-tcat/issues/168)
 
     // Test if a reconstruction is neccessary
 
@@ -702,6 +702,8 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
 
                 $roles = array ( 'track', 'follow' );
 
+                // TODO: add comments
+
                 foreach ($roles as $role) {
 
                     logit($logtarget, "Handle rate limits for role $role");
@@ -728,7 +730,7 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                                 // extra check to handle controller resets
                                 $sql = "select max(tweets) as record_max, min(tweets) as record_min, min(start) as start, unix_timestamp(min(start)) as start_unix, max(start) as end, unix_timestamp(max(start)) as end_unix from tcat_error_ratelimit where `type` = '$role' and id <= $consolidate_max_id and id >= " . $res['id'] . " and ( select tweets from tcat_error_ratelimit where id = $consolidate_max_id ) > ( select tweets from tcat_error_ratelimit where id = " . $res['id'] . " )";
                                 $rec2 = $dbh->prepare($sql);
-                                $rec2->execute();
+                                $rec2->execute();   // TODO: doublecheck this fetch.
                                 while ($res2 = $rec2->fetch()) {
                                     if ($res2['record_max'] == null) {
                                         $controller_restart_detected = true;
@@ -765,24 +767,31 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                     }
                 }
 
+                // By using a TRANSACTION block here, we ensure the tcat_error_ratelimit will not end up in an undefined state
+
+                $dbh->beginTransaction();
+
                 $sql = "delete from tcat_error_ratelimit where start < '$now' or end < '$now'";
                 $rec = $dbh->prepare($sql);
-                logit($logtarget, "Removing old records from tcat_error_ratelimit (DO NOT INTERRUPT YOUR UPGRADE PROCESS)");
+                logit($logtarget, "Removing old records from tcat_error_ratelimit");
                 $rec->execute();
 
                 $sql = "insert into tcat_error_ratelimit ( `type`, start, end, tweets ) select `type`, start, end, tweets from tcat_error_ratelimit_upgrade order by start asc";
                 $rec = $dbh->prepare($sql);
-                logit($logtarget, "Inserting new records into tcat_error_ratelimit (DO NOT INTERRUPT YOUR UPGRADE PROCESS)");
+                logit($logtarget, "Inserting new records into tcat_error_ratelimit");
                 $rec->execute();
+
+                $sql = "insert into tcat_status ( variable, value ) values ( 'ratelimit_database_rebuild', '1' )";
+                $rec = $dbh->prepare($sql);
+                $rec->execute();
+
+                $dbh->commit();
 
                 logit($logtarget, "Rebuilding of tcat_error_ratelimit has finished");
                 $sql = "drop table tcat_error_ratelimit_upgrade";
                 $rec = $dbh->prepare($sql);
                 $rec->execute();
 
-                $sql = "insert into tcat_status ( variable, value ) values ( 'ratelimit_database_rebuild', '1' )";
-                $rec = $dbh->prepare($sql);
-                $rec->execute();
 
             }
         }
@@ -872,6 +881,7 @@ function ratelimit_smoother($dbh, $role, $start, $end, $start_unix, $end_unix, $
         $rec = $dbh->prepare($sql);
         $rec->execute();
     } else {
+        // TODO: blokgrafiek per uur, *geen* averaging vanaf de vorige periode.
         // TCAT is registering time ratelimits per hour here
         $avg_tweets_per_minute = round($tweets / $minutes_difference);
         if ($avg_tweets_per_minute == 0) {
