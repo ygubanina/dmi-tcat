@@ -666,14 +666,6 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                 $difference_minutes = round(($now_unix / 60 - $beginning_unix / 60) + 1);
                 logit($logtarget, "We have ratelimit information on this server for the past $difference_minutes minutes.");
 
-                $roles = unserialize(CAPTUREROLES);
-                foreach ($roles as $role) {
-                    logit($logtarget, "Restarting active capture role: $role");
-                    $query = "INSERT INTO tcat_controller_tasklist ( task, instruction ) values ( '$role', 'reload' )";
-                    $rec = $dbh->prepare($query);
-                    $rec->execute();
-                }
-
                 logit($logtarget, "Processing everything before MySQL date $now");
 
                 // zero all minutes for the past 2.5 years maximally, or until the beginning of our capture era, for roles track and follow
