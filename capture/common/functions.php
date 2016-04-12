@@ -51,15 +51,6 @@ function create_error_logs() {
     $h->execute();
 
     /*
-     * The tcat_emails table stores information about when TCAT has sent an e-mail out to its users or administrators. The purpose of the table is primarily to prevent multiple
-     * e-mails from being sent within a configured timeframe, hence the timestamp column.
-     */
-
-    $sql = 'create table if not exists tcat_emails ( id bigint auto_increment, template varchar(32), ts datetime not null, primary key(id), index(template), index(ts) )';
-    $h = $dbh->prepare($sql);
-    $h->execute();
-
-    /*
      * The tcat_status variable is utilised as generic keystore to record and track aspects of this TCAT installation.
      * This is not a configuration table. The configuration of TCAT is defined in config.php, though we may wish to allow dynamically configurable
      * options in the future and this table would suit such a purpose.
@@ -470,21 +461,19 @@ function gap_record($role, $ustart, $uend) {
 
 function ratelimit_report_problem() {
     if (defined('RATELIMIT_MAIL_HOURS') && RATELIMIT_MAIL_HOURS > 0) {
-        $sql = "select count(*) as cnt from tcat_error_ratelimit where start > (now() - interval " . RATELIMIT_MAIL_HOURS . " hour)";
+        create_error_logs();    /* we need the tcat_status table */
+        $sql = "select count(*) as cnt from tcat_status where variable = 'email_ratelimit' and value > (now() - interval " . RATELIMIT_MAIL_HOURS . " hour);";
         $result = mysql_query($sql);
         if ($row = mysql_fetch_assoc($result)) {
-            if (isset($row['cnt']) && $row['cnt'] > 0) {
-                create_error_logs();    /* we need the tcat_emails table */
-                $sql = "select ts from tcat_emails where template = 'ratelimit' and ts > date_sub(now(), interval " . RATELIMIT_MAIL_HOURS . " hour) order by ts desc limit 1";
-                $sqlresults = mysql_query($sql);
-                if (mysql_num_rows($sqlresults) == 0) {
-                    /* send e-mail and register time of the action */
-                    $sql = "insert into tcat_emails ( template, ts ) values ( 'ratelimit', now() )";
-                    $result = mysql_query($sql);
-                    global $mail_to;
-                    mail($mail_to, 'DMI-TCAT rate limit has been reached (server: ' . getHostName() . ')', 'The script running the ' . CAPTURE . ' query has hit a rate limit while talking to the Twitter API. Twitter is not allowing you to track more than 1% of its total traffic at any time. This means that the number of tweets exceeding the barrier are being dropped. Consider reducing the size of your query bins and reducing the number of terms and users you are tracking.' . "\n\n" .
-                            'This may be a temporary or a structural problem. Please look at the webinterface for more details. Rate limit statistics on the website are historic, however. Consider this message indicative of a current issue. This e-mail will not be repeated for at least ' . RATELIMIT_MAIL_HOURS . ' hours.', 'From: no-reply@dmitcat');
-                }
+            if (isset($row['cnt']) && $row['cnt'] == 0) {
+                /* send e-mail and register time of the action */
+                $sql = "delete from tcat_status where variable = 'email_ratelimit'";
+                $result = mysql_query($sql);
+                $sql = "insert into tcat_status ( variable, value ) values ( 'email_ratelimit', now() )";
+                $result = mysql_query($sql);
+                global $mail_to;
+                mail($mail_to, 'DMI-TCAT rate limit has been reached (server: ' . getHostName() . ')', 'The script running the ' . CAPTURE . ' query has hit a rate limit while talking to the Twitter API. Twitter is not allowing you to track more than 1% of its total traffic at any time. This means that the number of tweets exceeding the barrier are being dropped. Consider reducing the size of your query bins and reducing the number of terms and users you are tracking.' . "\n\n" .
+                        'This may be a temporary or a structural problem. Please look at the webinterface for more details. Rate limit statistics on the website are historic, however. Consider this message indicative of a current issue. This e-mail will not be repeated for at least ' . RATELIMIT_MAIL_HOURS . ' hours.', 'From: no-reply@dmitcat');
             }
         }
     }
@@ -2012,10 +2001,10 @@ function tracker_streamCallback($data, $length, $metrics) {
 
         if (array_key_exists('limit', $data) && isset($data['limit']['track'])) {
             $current = $data['limit'][CAPTURE];
-            // new rate limits - grow record
+            // we have a new rate limit, grow record
             $rl_current_record += $current;
         } else {
-            // we new rate limits - sustain current record
+            // when no new rate limits occur, sustain current record
             $current = $rl_current_record;
         }
 
