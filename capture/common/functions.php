@@ -1,6 +1,6 @@
 <?php
 
-require_once("geoPHP/geoPHP.inc"); // geoPHP library
+require_once __DIR__ . '/geoPHP/geoPHP.inc'; // geoPHP library
 
 error_reporting(E_ALL);
 ini_set("max_execution_time", 0);       // capture script want unlimited execution time
@@ -343,6 +343,15 @@ function create_admin() {
     $create = $dbh->prepare($sql);
     $create->execute();
 
+    $sql = "CREATE TABLE IF NOT EXISTS tcat_controller_tasklist (
+    `id` BIGINT AUTO_INCREMENT,
+    `task` VARCHAR(32) NOT NULL,
+    `instruction` VARCHAR(255) NOT NULL,
+    `ts_issued` timestamp DEFAULT current_timestamp,
+    primary key(id) ) ENGINE = MyISAM DEFAULT CHARSET = utf8mb4";
+    $create = $dbh->prepare($sql);
+    $create->execute();
+
     // 03/03/2015 Add comments column [fast auto-upgrade - reminder to remove]
     $query = "SHOW COLUMNS FROM tcat_query_bins";
     $rec = $dbh->prepare($query);
@@ -512,7 +521,7 @@ function tcat_autoupgrade() {
  */
 
 function script_lock($script, $test = false) {
-    $lockfile = BASE_FILE . "proc/$script.lock";
+    $lockfile = __DIR__ . "/../../proc/$script.lock";
 
     if (!file_exists($lockfile)) {
         touch($lockfile);
@@ -541,20 +550,20 @@ function logit($file, $message) {
     if ($file == "cli")
         print $message;
     else
-        file_put_contents(BASE_FILE . "logs/" . $file, $message, FILE_APPEND);
+        file_put_contents(__DIR__ . "/../../logs/" . $file, $message, FILE_APPEND);
 }
 
 /*
  * Returns the git status information for the local install
  */
 function getGitLocal() {
-    $gitcmd = 'git --git-dir ' . BASE_FILE . '.git log --pretty=oneline -n 1';
+    $gitcmd = 'git --git-dir ' . realpath(__DIR__ . '/../..') .  '/.git log --pretty=oneline -n 1';
     $gitlog = `$gitcmd`;
     $parse = rtrim($gitlog);
     if (preg_match("/^([a-z0-9]+)[\t ](.+)$/", $parse, $matches)) {
         $commit = $matches[1];
         $mesg = $matches[2];
-        $gitcmd = 'git --git-dir ' . BASE_FILE . '.git rev-parse --abbrev-ref HEAD';
+        $gitcmd = 'git --git-dir ' . realpath(__DIR__ . '/../..') . '/.git rev-parse --abbrev-ref HEAD';
         $gitrev = `$gitcmd`;
         $branch = rtrim($gitrev);
         return array( 'branch' => $branch,
@@ -630,13 +639,17 @@ function getActivePhrases() {
 
 function getBinType($binname) {
     $dbh = pdo_connect();
-    $sql = "SELECT `type` FROM tcat_query_bins WHERE querybin = :querybin";
+    $sql = "SELECT querybin, `type` FROM tcat_query_bins WHERE querybin = :querybin";
     $rec = $dbh->prepare($sql);
     $rec->bindParam(':querybin', $binname);
     $rec->execute();
-    $results = $rec->fetchAll(PDO::FETCH_COLUMN);
-    foreach ($results as $k => $v) {
-        return $v;
+    if ($rec->execute() && $rec->rowCount() > 0) {
+        while ($res = $rec->fetch()) {
+            // This enforces a case-sensitive comparison without having to explicitely detect the collation any tables (utf8 or utf8mb4)
+            if ($res['querybin'] == $binname) {
+                return $res['type'];
+            }
+        }
     }
     $dbh = false;
     return false;
@@ -1686,7 +1699,7 @@ class TweetQueue {
 
             if (defined('CAPTURE') && database_activity($dbh)) {
                 $pid = getmypid();
-                file_put_contents(BASE_FILE . "proc/" . CAPTURE . ".procinfo", $pid . "|" . time());
+                file_put_contents(__DIR__ . "/../../proc/" . CAPTURE . ".procinfo", $pid . "|" . time());
             }
         }
 
@@ -1876,7 +1889,7 @@ function tracker_run() {
     logit(CAPTURE . ".error.log", "started script " . CAPTURE . " with pid $pid");
 
     $lastinsert = time();
-    $procfilename = BASE_FILE . "proc/" . CAPTURE . ".procinfo";
+    $procfilename = __DIR__ . "/../../proc/" . CAPTURE . ".procinfo";
     if (file_put_contents($procfilename, $pid . "|" . time()) === FALSE) {
         logit(CAPTURE . ".error.log", "cannot register capture script start time (file \"$procfilename\" is not WRITABLE. make sure the proc/ directory exists in your webroot and is writable by the cron user)");
         die();

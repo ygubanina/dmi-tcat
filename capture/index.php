@@ -1,13 +1,13 @@
 <?php
-include_once("../config.php");
+include_once __DIR__ . '/../config.php';
 
 if (defined("ADMIN_USER") && ADMIN_USER != "" && (!isset($_SERVER['PHP_AUTH_USER']) || $_SERVER['PHP_AUTH_USER'] != ADMIN_USER))
     die("Go away, you evil hacker!");
 
-include_once("query_manager.php");
-include_once BASE_FILE . '/common/functions.php';
-include_once BASE_FILE . '/common/upgrade.php';
-include_once BASE_FILE . '/capture/common/functions.php';
+include_once __DIR__ . '/query_manager.php';
+include_once __DIR__ . '/../common/functions.php';
+include_once __DIR__ . '/../common/upgrade.php';
+include_once __DIR__ . '/../capture/common/functions.php';
 
 create_admin();
 create_error_logs();
@@ -595,6 +595,7 @@ foreach ($bins as $id => $bin)
         if(!validateType(_type))
             return false;
         var _bin = $("#newbin_name").val();
+        _bin = _bin.replace(/ /g,"_");
         if(!validateBin(_bin))
             return false;
         var _comments = $("textarea[name=newbin_comments]").val();
