@@ -588,11 +588,11 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
 
     // 05/04/2016 Re-assemble historical TCAT ratelimit information to keep appropriate interval records (see the discussion on Github: https://github.com/digitalmethodsinitiative/dmi-tcat/issues/168)
 
-    // Test if a reconstruction is neccessary
+    // First test if a reconstruction is neccessary
 
     $already_updated = true;
 
-    $now = null;        // variable will store the moment the new gauge behaviour became effective
+    $now = null;        // this variable will store the moment the new gauge behaviour became effective
 
     $sql = "select value, unix_timestamp(value) as value_unix from tcat_status where variable = 'ratelimit_format_modified_at'";
     $rec = $dbh->prepare($sql);
@@ -653,6 +653,15 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                 logit($logtarget, $cmd);
                 system($cmd);
 
+                /*
+                 * Strategy:
+                 *
+                 * As recording of ratelimit continues in tcat_error_ratelimit, we build a tcat_error_ratelimit_upgrade table.
+                 * For the entire timespan _before_ the new gauge behaviour became effective, we do a minute-interval reconstruction in this temporary upgrade table.
+                 * Finally we throw away existing tcat_error_ratelimit entries from this era and insert the ones from our temporary table.
+                 *
+                 */
+
                 $sql = "create temporary table if not exists tcat_error_ratelimit_upgrade ( id bigint, `type` varchar(32), start datetime not null, end datetime not null, tweets bigint not null, primary key(id, type), index(type), index(start), index(end) ) ENGINE=MyISAM";
                 $rec = $dbh->prepare($sql);
                 $rec->execute();
@@ -665,6 +674,15 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
 
                 $difference_minutes = round(($now_unix / 60 - $beginning_unix / 60) + 1);
                 logit($logtarget, "We have ratelimit information on this server for the past $difference_minutes minutes.");
+
+                $sql = "select unix_timestamp(max(start)) as timestamp_fixed_dateformat from tcat_error_ratelimit where end < start";
+                $rec = $dbh->prepare($sql);
+                $rec->execute();
+                $results = $rec->fetch(PDO::FETCH_ASSOC);
+                $timestamp_fixed_dateformat = $results['timestamp_fixed_dateformat'];
+                if ($timestamp_fixed_dateformat) {
+                    logit($logtarget, "Dateformat fix found at '$timestamp_fixed_dateformat' (unix)");
+                }
 
                 logit($logtarget, "Processing everything before MySQL date $now");
 
@@ -694,24 +712,37 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
 
                 $roles = array ( 'track', 'follow' );
 
-                // TODO: add comments
-
                 foreach ($roles as $role) {
 
                     logit($logtarget, "Handle rate limits for role $role");
-                    $sql = "select id, `type` as role, date_format(start, '%k') as measure_hour, date_format(start, '%i') as measure_minute, tweets as incr_record from tcat_error_ratelimit where `type` = '$role' order by id desc";
+
+                    /*
+                     * Start reading the tcat_error_ratelimit table for the role we are working on. We are using the 'start' column because it contains sufficient information.
+                     */
+                    $sql = "select id,
+                                   `type` as role,
+                                   date_format(start, '%k') as measure_hour,
+                                   date_format(start, '%i') as measure_minute,
+                                   tweets as incr_record from tcat_error_ratelimit where `type` = '$role'
+                                   order by id desc";
                     $rec = $dbh->prepare($sql);
                     $rec->execute();
-                    $consolidate_hour = -1;
-                    $consolidate_minute = -1;
-                    $consolidate_max_id = -1;
+                    $consolidate_hour = -1;         // the hour we are working on to consolidate our data
+                    $consolidate_minute = -1;       // the minute we are working on to consolidate our data
+                    $consolidate_max_id = -1;       // the maximum tcat_error_ratelimit ID within the consolidation timeframe
                     while ($res = $rec->fetch()) {
+                        // measure_minute will contain the minute we are reading from the table (remember: backwards in time)
                         $measure_minute = ltrim($res['measure_minute']);
                         if ($measure_minute == '') {
                             $measure_minute = 0;
                         }
+                        // measure_hour will contain the minute we are reading from the table (again: backwards in time)
                         $measure_hour = $res['measure_hour'];
                         if ($measure_minute != $consolidate_minute || $measure_hour != $consolidate_hour) {
+                            /* 
+                             * We are reading a new entry not inside our consolidation frame (which has the resolution of an hour or minute)
+                             * We will consolidate our data, unless we are at the first row.
+                             */
                             if ($consolidate_minute == -1) {
                                 // first row received
                                 $consolidate_minute = $measure_minute;
@@ -719,22 +750,40 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                                 $consolidate_max_id = $res['id'];
                             } else {
                                 $controller_restart_detected = false;
-                                // extra check to handle controller resets
-                                $sql = "select max(tweets) as record_max, min(tweets) as record_min, min(start) as start, unix_timestamp(min(start)) as start_unix, max(start) as end, unix_timestamp(max(start)) as end_unix from tcat_error_ratelimit where `type` = '$role' and id <= $consolidate_max_id and id >= " . $res['id'] . " and ( select tweets from tcat_error_ratelimit where id = $consolidate_max_id ) > ( select tweets from tcat_error_ratelimit where id = " . $res['id'] . " )";
+                                /*
+                                 * The SQL query below reads the MIN and MAX recorded tweets values for our interval.
+                                 *
+                                 * It additionally checks to detect controller resets. Whenever the controller resets itself, because of a crash or server reboot,
+                                 * the incremental counter will jump to zero. This SQL query recognizes this sudden jump by explicitely verifying the order.
+                                 *
+                                 * Note: this query uses max(start) to determine the start parameter to pass to the smoothing function. If we would've used min(start),
+                                 * we inadvertently include the start column of the NEXT row, and that's not our intention. Because we are using max(start), it is
+                                 * possible that the difference in minutes between the 'start' and 'end' becomes less than 1 minute. Our smoother function is
+                                 * aware of this.
+                                 *
+                                 */
+                                $sql = "select max(tweets) as record_max,
+                                               min(tweets) as record_min,
+                                               max(start) as start, unix_timestamp(max(start)) as start_unix,
+                                               max(end) as end, unix_timestamp(max(end)) as end_unix
+                                        from tcat_error_ratelimit where `type` = '$role' and
+                                               id >= " . $res['id'] . " and
+                                               id <= $consolidate_max_id and
+                                                    ( select tweets from tcat_error_ratelimit where id = $consolidate_max_id ) >
+                                                    ( select tweets from tcat_error_ratelimit where id = " . $res['id'] . " )";
                                 $rec2 = $dbh->prepare($sql);
-                                $rec2->execute();   // TODO: doublecheck this fetch.
+                                $rec2->execute();       // our query will always return a non-empty result, because min()/max() always produce a row (with a possible NULL as value)
                                 while ($res2 = $rec2->fetch()) {
                                     if ($res2['record_max'] == null) {
+                                        // The order is NOT incremental.
                                         $controller_restart_detected = true;
                                     }
                                     $record_max = $res2['record_max'];
                                     $record_min = $res2['record_min'];
                                     $record = $record_max - $record_min;
                                     if ($controller_restart_detected) {
-                                        $record = 0;
-                                    }
-                                    if ($record >= 0) {
-                                        ratelimit_smoother($dbh, $role, $res2['start'], $res2['end'], $res2['start_unix'], $res2['end_unix'], $record);
+                                    } elseif ($record >= 0) {
+                                        ratelimit_smoother($dbh, $timestamp_fixed_dateformat, $role, $res2['start'], $res2['end'], $res2['start_unix'], $res2['end_unix'], $record);
                                     }
                                 }
                                 $consolidate_minute = $measure_minute;
@@ -745,7 +794,12 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                     }
                     if ($consolidate_minute != -1) {
                         // we consolidate the last minute
-                        $sql = "select max(tweets) as record_max, min(tweets) as record_min, min(start) as start, unix_timestamp(min(start)) as start_unix, max(start) as end, unix_timestamp(max(start)) as end_unix from tcat_error_ratelimit where `type` = '$role' and id <= $consolidate_max_id";
+                        $sql = "select max(tweets) as record_max,
+                                       min(tweets) as record_min,
+                                       min(start) as start, unix_timestamp(min(start)) as start_unix,
+                                       max(end) as end, unix_timestamp(max(end)) as end_unix
+                                from tcat_error_ratelimit where `type` = '$role' and
+                                       id <= $consolidate_max_id";
                         $rec2 = $dbh->prepare($sql);
                         $rec2->execute();
                         while ($res2 = $rec2->fetch()) {
@@ -753,7 +807,7 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                             $record_min = $res2['record_min'];
                             $record = $record_max - $record_min;
                             if ($record > 0) {
-                                ratelimit_smoother($dbh, $role, $res2['start'], $res2['end'], $res2['start_unix'], $res2['end_unix'], $record);
+                                ratelimit_smoother($dbh, $timestamp_fixed_dateformat, $role, $res2['start'], $res2['end'], $res2['start_unix'], $res2['end_unix'], $record);
                             }
                         }
                     }
@@ -772,6 +826,12 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                 $rec = $dbh->prepare($sql);
                 logit($logtarget, "Inserting new records into tcat_error_ratelimit");
                 $rec->execute();
+
+                /*
+                 * The next operation will break the tie between the ascending order of the ID primary key, and the datetime columns start and end. This is not a problem per se.
+                 * Rebuilding that order is feasible, but we shouldn't re-run this upgrade step anyway and this will never be presented as an option to the user.
+                 * If something goes wrong, restore the original table from the backup instead.
+                 */
 
                 $sql = "insert into tcat_status ( variable, value ) values ( 'ratelimit_database_rebuild', '1' )";
                 $rec = $dbh->prepare($sql);
@@ -859,30 +919,124 @@ if (env_is_cli()) {
 /*
  * Smoothing function for ratelimit re-assembly
  */
-
-function ratelimit_smoother($dbh, $role, $start, $end, $start_unix, $end_unix, $tweets) {
-    $minutes_difference = round($end_unix / 60 - $start_unix / 60);
+function ratelimit_smoother($dbh, $timestamp_fixed_dateformat, $role, $start, $end, $start_unix, $end_unix, $tweets) {
+    $minutes_difference = round(abs($end_unix / 60 - $start_unix / 60));
     if ($tweets <= 0) return;
-    if ($minutes_difference <= 2) {
-        // TCAT is already capturing and registering time ratelimits per minute here
-        // We are at the next row in the minutes table, therefore we add 1 minute to both start and end
-        // We also strip the seconds
-        $sql = "update tcat_error_ratelimit_upgrade set tweets = $tweets where `type` = '$role' and
-                        start >= date_add( date_sub( '$start', interval second('$start') second ), interval 1 minute ) and
-                        end <= date_add( '$end', interval 1 minute )";
-        $rec = $dbh->prepare($sql);
-        $rec->execute();
-    } else {
-        // TODO: blokgrafiek per uur, *geen* averaging vanaf de vorige periode.
-        // TCAT is registering time ratelimits per hour here
-        $avg_tweets_per_minute = round($tweets / $minutes_difference);
+    if ($minutes_difference > 61) {
+
+        // TCAT has ratelimit data with a big time difference (more than an hour)
+        // Consolidate around the last hour and create an average tweets per minute.
+
+        $avg_tweets_per_minute = round($tweets / 60);
         if ($avg_tweets_per_minute == 0) {
             return;
-        }
-        $sql = "update tcat_error_ratelimit_upgrade set tweets = $avg_tweets_per_minute where `type` = '$role' and start >= date_sub( '$start', interval second('$start') second ) and end < '$end'";
+        }       
+
+        $sql = "update tcat_error_ratelimit_upgrade set tweets = $avg_tweets_per_minute where `type` = '$role' and
+                            start >= date_sub( date_sub( date_sub( '$end', interval second('$end') second ), interval minute('$end') minute), interval 1 hour ) and
+                            end <= date_sub( date_sub( '$end', interval second('$end') second ), interval minute('$end') minute )";
+
         $rec = $dbh->prepare($sql);
         $rec->execute();
+
+        return;
     }
+
+    if ($start_unix > $timestamp_fixed_dateformat) {
+
+        // Within this timeframe, the minute-part of the timestamp can be trusted
+        // as a result of fix: https://github.com/digitalmethodsinitiative/dmi-tcat/commit/5385937cc38869ba0a6e9a2ace7875afe7eb1256
+
+        if ($minutes_difference == 0) {
+
+            // TCAT is already capturing and registering time ratelimits per MINUTE here,
+            // But is recording multiple hits within a single minute. We will consolidate those to :00 - :00 of whole minutes
+            // as per the new gauge measurement style.
+
+            $sql = "update tcat_error_ratelimit_upgrade set tweets = $tweets where `type` = '$role' and
+                            start >= date_sub( '$start', interval second('$start') second ) and
+                            end <= date_add( date_sub( '$end', interval second('$end') second ), interval 1 minute)";
+            $rec = $dbh->prepare($sql);
+            $rec->execute();
+
+        } elseif ($minutes_difference > 0 && $minutes_difference < 59) {
+
+            $avg_tweets_per_minute = round($tweets / $minutes_difference);
+            if ($avg_tweets_per_minute == 0) {
+                return;
+            }       
+
+            // TCAT is already capturing and registering time ratelimits per MINUTE here
+            // We keep the tweet record, but strip the seconds
+
+            $sql = "update tcat_error_ratelimit_upgrade set tweets = $avg_tweets_per_minute where `type` = '$role' and
+                            start >= date_sub( '$start', interval second('$start') second ) and
+                            end <= date_sub( '$end', interval second('$end') second )";
+            $rec = $dbh->prepare($sql);
+            $rec->execute();
+
+        } else if ($minutes_difference <= 61) {
+
+            // TCAT has ratelimit data with an HOURLY precision here, round minutes to start and end of the measurement hour
+            // and create an average tweets per minute.
+
+            $avg_tweets_per_minute = round($tweets / 60);
+            if ($avg_tweets_per_minute == 0) {
+                return;
+            }       
+
+            $sql = "update tcat_error_ratelimit_upgrade set tweets = $avg_tweets_per_minute where `type` = '$role' and
+                                start >= date_sub( date_sub( '$start', interval second('$start') second ), interval minute('$start') minute) and
+                                end <= date_sub( date_sub( '$end', interval second('$end') second ), interval minute('$end') minute )";
+
+            $rec = $dbh->prepare($sql);
+            $rec->execute();
+
+        } 
+
+    } else {
+
+        // Within this timeframe, the minute-part of the timestamp cannot be trusted.
+
+        // TCAT has ratelimit data with an HOURLY precision here (with an erroneous minute measurement).
+
+        if ($minutes_difference == 0) { 
+
+            // We have multiple (untrusted) measurements within one hour; consolidate around the whole hour
+
+            $avg_tweets_per_minute = round($tweets / 60);
+            if ($avg_tweets_per_minute == 0) {
+                return;
+            }
+
+            $sql = "update tcat_error_ratelimit_upgrade set tweets = $avg_tweets_per_minute where `type` = '$role' and
+                                start >= date_sub( date_sub( '$start', interval second('$start') second ), interval minute('$start') minute) and
+                                end <= date_add( date_sub( date_sub( '$end', interval second('$end') second ), interval minute('$end') minute ), interval 1 hour)";
+
+            $rec = $dbh->prepare($sql);
+            $rec->execute();
+
+        } else {
+        
+            // We have an trusted hourly measurement; and the difference between the previous rate limit hit is not more than one hour.
+            // Consolidate around the hour.
+
+            $avg_tweets_per_minute = round($tweets / 60);
+            if ($avg_tweets_per_minute == 0) {
+                return;
+            }       
+
+            $sql = "update tcat_error_ratelimit_upgrade set tweets = $avg_tweets_per_minute where `type` = '$role' and
+                                start >= date_sub( date_sub( '$start', interval second('$start') second ), interval minute('$start') minute) and
+                                end <= date_sub( date_sub( '$end', interval second('$end') second ), interval minute('$end') minute )";
+
+            $rec = $dbh->prepare($sql);
+            $rec->execute();
+
+        }
+
+    }
+
 }
 
 function get_executable($binary) {

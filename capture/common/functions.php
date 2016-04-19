@@ -1879,10 +1879,10 @@ function tracker_run() {
     global $last_insert_id;
     global $tracker_started_at;
 
-    $rl_current_record = 0;
-    $rl_registering_minute = get_current_minute();
-    $last_insert_id = -1;
-    $tracker_started_at = time();
+    $rl_current_record = 0;                                 // how many tweets have been ratelimited this MINUTE?
+    $rl_registering_minute = get_current_minute();          // what is the minute we are registering (as soon as the current minute differs from this, we insert our record in the database)
+    $last_insert_id = -1;                                   // needed to make INSERT DELAYED work, see the function database_activity()
+    $tracker_started_at = time();                           // the walltime when this script was started
 
     global $twitter_consumer_key, $twitter_consumer_secret, $twitter_user_token, $twitter_user_secret, $lastinsert;
 
@@ -1997,19 +1997,21 @@ function tracker_streamCallback($data, $length, $metrics) {
         $current_minute = get_current_minute();
 
         // we keep a a counter of the nr. of tweets rate limited and reset it at intervals of one minute
+
         // read possible rate limit information from Twitter
 
         if (array_key_exists('limit', $data) && isset($data['limit']['track'])) {
             $current = $data['limit'][CAPTURE];
-            // we have a new rate limit, grow record
+            // we have a new rate limit, grow the record
             $rl_current_record += $current;
         } else {
-            // when no new rate limits occur, sustain current record
+            // when no new rate limits occur, sustain our current record
             $current = $rl_current_record;
         }
 
-
         if ($rl_registering_minute != $current_minute) {
+
+            // the current minute is no longer our registering minute; we have to record our ratelimit information in the database
 
             if ($current_minute == 0 && $rl_registering_minute < 59 ||
                 $current_minute > 0 && $current_minute < $rl_registering_minute ||
