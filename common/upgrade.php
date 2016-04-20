@@ -675,24 +675,64 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                 $rec->execute();
                 $results = $rec->fetch(PDO::FETCH_ASSOC);
                 $beginning_unix = $results['beginning_unix'];
-
-                $difference_minutes = round(($now_unix / 60 - $beginning_unix / 60) + 1);
+                if (is_null($beginning_unix)) {
+                    $difference_minutes = 0;
+                } else {
+                    $difference_minutes = round(($now_unix / 60 - $beginning_unix / 60) + 1);
+                }
                 logit($logtarget, "We have ratelimit information on this server for the past $difference_minutes minutes.");
 
-                $sql = "select unix_timestamp(max(start)) as timestamp_fixed_dateformat from tcat_error_ratelimit where end < start";
+                // If we have an end before a start time, we are sure we cannot trust any minute measurements before this occurance
+
+                $sql = "select max(start) as time_fixed_dateformat, unix_timestamp(max(start)) as timestamp_fixed_dateformat from tcat_error_ratelimit where end < start";
                 $rec = $dbh->prepare($sql);
                 $rec->execute();
                 $results = $rec->fetch(PDO::FETCH_ASSOC);
-                $timestamp_fixed_dateformat = $results['timestamp_fixed_dateformat'];
-                if ($timestamp_fixed_dateformat) {
-                    logit($logtarget, "Dateformat fix found at '$timestamp_fixed_dateformat' (unix)");
-                } else {
+                $ratelimit_time_fixed_dateformat = $results['time_fixed_dateformat'];
+                $ratelimit_timestamp_fixed_dateformat = $results['timestamp_fixed_dateformat'];
+
+                $sql = "select max(start) as time_fixed_dateformat, unix_timestamp(max(start)) as timestamp_fixed_dateformat from tcat_error_gap where end < start";
+                $rec = $dbh->prepare($sql);
+                $rec->execute();
+                $results = $rec->fetch(PDO::FETCH_ASSOC);
+                $gap_time_fixed_dateformat = $results['time_fixed_dateformat'];
+                $gap_timestamp_fixed_dateformat = $results['timestamp_fixed_dateformat'];
+
+                // Compare query results and pick earliest possible moment of distrust.
+
+                if (!$ratelimit_time_fixed_dateformat && !$gap_time_fixed_dateformat) {
+                    // Assume all measurements where hour-based until now.
+                    logit($logtarget, "Dateformat fix not found");
+                    $time_fixed_dateformat = $now;
                     $timestamp_fixed_dateformat = $now_unix;
+                } elseif (!$ratelimit_time_fixed_dateformat) {
+                    // We have only information in the gap table
+                    logit($logtarget, "Dateformat fix solely in tcat_error_gap");
+                    $time_fixed_dateformat = $gap_time_fixed_dateformat;
+                    $timestamp_fixed_dateformat = $gap_timestamp_fixed_dateformat;
+                } elseif (!$gap_time_fixed_dateformat) {
+                    // We have only information in the ratelimit table
+                    logit($logtarget, "Dateformat fix solely in tcat_error_ratelimit");
+                    $time_fixed_dateformat = $ratelimit_time_fixed_dateformat;
+                    $timestamp_fixed_dateformat = $ratelimit_timestamp_fixed_dateformat;
+                } else {
+                    // Compare table informmation
+                    if ($gap_timestamp_fixed_dateformat > $ratelimit_timestamp_fixed_dateformat) {
+                        logit($logtarget, "Dateformat fix learned from tcat_error_gap");
+                        $time_fixed_dateformat = $gap_time_fixed_dateformat;
+                        $timestamp_fixed_dateformat = $gap_timestamp_fixed_dateformat;
+                    } else {
+                        logit($logtarget, "Dateformat fix learned from tcat_error_ratelimit");
+                        $time_fixed_dateformat = $ratelimit_time_fixed_dateformat;
+                        $timestamp_fixed_dateformat = $ratelimit_timestamp_fixed_dateformat;
+                    }
                 }
+
+                logit($logtarget, "Dateformat fix found at '$time_fixed_dateformat'");
 
                 logit($logtarget, "Processing everything before MySQL date $now");
 
-                // zero all minutes for the past 2.5 years maximally, or until the beginning of our capture era, for roles track and follow
+                // Zero all minutes for the past 2.5 years maximally, or until the beginning of our capture era, for roles track and follow
 
                 $max_minutes = min(1314000, $difference_minutes);
 
@@ -852,6 +892,9 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
 
                 /*
                  * Second part: gaps
+                 *
+                 * Notice we do all datetime functions in native MySQL. This may appear to be cumbersome but is has the advantage of having to do a minimal ammount of datetime conversions,
+                 * and being able to ignore the system clock (OS). The gap table is not big and this upgrade step should maximally take several hours on long-running servers.
                  */
 
                 logit($logtarget, "Now rebuilding tcat_error_gap table");
@@ -888,8 +931,10 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                     $rec = $dbh->prepare($sql);
                     $rec->execute();
                     $ignore_start = $already_recorded_until = null;
+                    $trust_minute_measurement = false;
                     while ($row = $rec->fetch(PDO::FETCH_ASSOC)) {
                         if ($row['start'] == $ignore_start) { continue; }
+                        // If we are being told about a gap we already know, skip it
                         if ($already_recorded_until) {
                             $sql2 = "select '" . $row['start'] . "' > '$already_recorded_until'";
                             $rec2 = $dbh->prepare($sql2);
@@ -900,7 +945,19 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                                 continue;
                             }
                         }
-
+                        // If we know for a fact the minute measurement is accurate, we work with that precision, and otherwise
+                        // we try to attain it by searching the real capture data.
+                        if (!$trust_minute_measurement) {
+                            $sql2 = "select '" . $row['start'] . "' > '$time_fixed_dateformat'";
+                            $rec2 = $dbh->prepare($sql2);
+                            $rec2->execute();
+                            $later_in_time = $rec2->fetchColumn();
+                            if ($later_in_time == '1') {
+                                $trust_minute_measurement = true;
+                            }
+                        }
+                        // The controller could create repeated rows with the same 'start' value if it didn't manage to boot up a role
+                        // The next query recognizes this.
                         $sql2 = "select max(end) as max_end from tcat_error_gap where type = '$type' and start = '" . $row['start'] . "'";
                         $rec2 = $dbh->prepare($sql2);
                         $rec2->execute();
@@ -914,44 +971,59 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                             if (preg_match("/^([0-9][0-9][0-9][0-9])\-([0-9][0-9])\-([0-9][0-9]) ([0-9][0-9]):([0-9][0-9]):([0-9][0-9])$/", $max_end, $matches_end) &&
                                 preg_match("/^([0-9][0-9][0-9][0-9])\-([0-9][0-9])\-([0-9][0-9]) ([0-9][0-9]):([0-9][0-9]):([0-9][0-9])$/", $row['start'], $matches_start)) {
 
-                                // Drop a distrusted minute measurement due to previous dateformat bug
+                                if (!$trust_minute_measurement) {
 
-                                // This first defines the gap as wide as possible (with an hourly precision). Afterwards we prune it by searching the real capture data.
+                                    // Drop a distrusted minute measurement due to previous dateformat bug
+                                    // This first defines the gap as wide as possible (with an hourly precision). Afterwards we prune it by searching the real capture data.
 
-                                $matches_start[5] = '00';   // minutes start
-                                $matches_start[6] = '00';   // seconds start
-                                $matches_end[5] = '59';     // minutes end
-                                $matches_end[6] = '59';     // seconds end
+                                    $matches_start[5] = '00';   // minutes start
+                                    $matches_start[6] = '00';   // seconds start
+                                    $matches_end[5] = '59';     // minutes end
+                                    $matches_end[6] = '59';     // seconds end
 
-                                $new_start = $matches_start[1] . '-' . $matches_start[2] . '-' . $matches_start[3] . ' ' .
-                                             $matches_start[4] . ':' . $matches_start[5] . ':' . $matches_start[6];
-                                $new_end = $matches_end[1] . '-' . $matches_end[2] . '-' . $matches_end[3] . ' ' .
-                                           $matches_end[4] . ':' . $matches_end[5] . ':' . $matches_end[6];
+                                    $new_start = $matches_start[1] . '-' . $matches_start[2] . '-' . $matches_start[3] . ' ' .
+                                                 $matches_start[4] . ':' . $matches_start[5] . ':' . $matches_start[6];
+                                    $new_end = $matches_end[1] . '-' . $matches_end[2] . '-' . $matches_end[3] . ' ' .
+                                               $matches_end[4] . ':' . $matches_end[5] . ':' . $matches_end[6];
+
+                                    // Now attempt to reduce the gap size
+
+                                    $reduced = reduce_gap_size($type, $new_start, $new_end);
+                                    if (is_null($reduced)) {
+                                        logit($logtarget, "Erroneous gap report for role $type from '" . $new_start . "' to '" . $new_end . "'");
+                                    } else {
+                                        $new_start = $reduced['shrunk_start'];
+                                        $new_end = $reduced['shrunk_end'];
+                                    }
+
+                                } else {
+
+                                    // Just copy both complete strings
+
+                                    $new_start = $matches_start[0];
+                                    $new_end = $matches_end[0];
+
+//                                    logit($logtarget, "We trust the next recorded gap without search");
+
+                                }
 
                                 // logit($logtarget, "Detected possible gap from '" . $new_start . "' to '" . $new_end . "' - now investigating");
-
-                                $reduced = reduce_gap_size($type, $new_start, $new_end);
-                                if (is_null($reduced)) {
-                                    logit($logtarget, "Erroneous gap report for role $type from '" . $new_start . "' to '" . $new_end . "'");
-                                } else {
-                                    $new_start = $reduced['shrunk_start'];
-                                    $new_end = $reduced['shrunk_end'];
                                 
-                                    logit($logtarget, "Recording gap for role $type from '" . $new_start . "' to '" . $new_end . "'");
-                                    $duplicate = false;
-                                    foreach ($gaps as $gap) {
-                                        if ($gap['start'] == $new_start && $gap['end'] == $new_end) {
-                                            $duplicate = true;
-                                        }
+                                logit($logtarget, "Recording gap for role $type from '" . $new_start . "' to '" . $new_end . "'");
+                                $duplicate = false;
+                                foreach ($gaps as $gap) {
+                                    if ($gap['start'] == $new_start && $gap['end'] == $new_end) {
+                                        $duplicate = true;
                                     }
-                                    if (!$duplicate) {
-                                        $gap = array( 'start' => $new_start, 'end' => $new_end );
-                                        $gaps[] = $gap;
-                                    }
-
-                                    $ignore_start = $row['start'];
-                                    $already_recorded_until = $new_end;
                                 }
+                                if (!$duplicate) {
+                                    $gap = array( 'start' => $new_start, 'end' => $new_end );
+                                    $gaps[] = $gap;
+                                }
+
+                                $ignore_start = $row['start'];
+                                $already_recorded_until = $new_end;
+
                             }
                         }
                     }
@@ -964,7 +1036,8 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                     $rec = $dbh->prepare($sql);
                     $rec->execute();
 
-                    // Knit hours togheter
+                    // Knit gap timespans togheter if they are absolutely sequential.
+
                     $newgaps = array();
                     $first = true;
                     $previous_start = $previous_end = null;
@@ -983,7 +1056,9 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                             $difference = $row['difference'];
                             break;
                         }
-                        if (isset($difference) && $difference == '00:00:01') {
+                        // This one second difference will be produced by us widening an hourly measurement as much as possible
+                        // (and not finding any real tweet data to shrink it)
+                        if ($gap !== end($gaps) && isset($difference) && $difference == '00:00:01') {
                             // Keep on knittin'
                             $previous_end = $gap['end'];
                         } else {
@@ -992,7 +1067,10 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                             $previous_end = $gap['end'];
                         }
                     }
-                    $gaps = $newgaps;
+                    // The knitting won't produce a result in a situation with only a single gap record
+                    if (count($gaps) > 1) {
+                        $gaps = $newgaps;
+                    }
 
                     foreach ($gaps as $gap) {
                         $sql = "insert into tcat_error_gap ( `type`, `start`, `end` ) values ( '$type', '" . $gap['start'] . "', '" . $gap['end'] . "' )";
