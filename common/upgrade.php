@@ -861,8 +861,8 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
 
                     $time_begin_gap = $timestamp_begin_gap = null;
 
-                    // Note: 1970-01-01 is the Unix timestamp for NULL. It is written to the database whenever there was a gap with an 'unknown' start time, due to the fact that there is
-                    // not proc/ information available to the controller.
+                    // Note: 1970-01-01 is the Unix timestamp for NULL. It was written to the database whenever there was a gap with an 'unknown' start time,
+                    // due to the fact that there was no proc/ information available to the controller. This behaviour has changed.
 
                     $sql = "select min(start) as time_begin_gap, unix_timestamp(min(start)) as timestamp_begin_gap FROM tcat_error_gap where type = '$type' and start > '1970-01-01 01:01:00'";
                     $rec = $dbh->prepare($sql);

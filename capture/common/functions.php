@@ -492,7 +492,7 @@ function ratelimit_report_problem() {
 }
 
 function toDateTime($unixTimestamp) {
-    return date("Y-m-d H:i:s", $unixTimestamp);
+    return date("Y-m-d H:i:s", intval($unixTimestamp));
 }
 
 /*
