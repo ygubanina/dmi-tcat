@@ -634,7 +634,7 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                 $ans = 'SKIP';
             }
         } else {
-            $ans = cli_yesnoall("Re-assemble historical TCAT ratelimit information to keep appropriate interval records (this could take quite a while on long-running servers, but it does not block anything or interrupt your capture)", 2);
+            $ans = cli_yesnoall("Re-assemble historical TCAT ratelimit and gap information to keep appropriate interval records (this could take quite a while on long-running servers, but it does not block anything or interrupt your capture)", 2);
         }
         if ($ans == 'y' || $ans == 'a') {
             
@@ -642,16 +642,20 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
             putenv('MYSQL_PWD=' . $dbpass);     /* this avoids having to put the password on the command-line */
 
             $ts = time();
-            logit($logtarget, "Backuping existing tcat_error_ratelimit information to your analysis/cache directory.");
-            $cmd = "$bin_mysqldump --default-character-set=utf8mb4 -u$dbuser -h $hostname $database tcat_error_ratelimit > " . __DIR__ . "/../analysis/cache/tcat_error_ratelimit_$ts.sql";
+            logit($logtarget, "Backuping existing tcat_error_ratelimit and tcat_error_gap information to your analysis/cache directory.");
+            $cmd = "$bin_mysqldump --default-character-set=utf8mb4 -u$dbuser -h $hostname $database tcat_error_ratelimit tcat_error_gap > " . __DIR__ . "/../analysis/cache/tcat_error_ratelimit_and_gap_$ts.sql";
             system($cmd, $retval);
             if ($retval != 0) {
                 logit($logtarget, "I couldn't create a backup. Is your ../analysis/cache directory writable for the current user? Aborting this upgrade step.");
             } else {
                 logit($logtarget, $cmd);
-                $cmd = "$bin_gzip " .  __DIR__ . "/../analysis/cache/tcat_error_ratelimit_$ts.sql";
+                $cmd = "$bin_gzip " .  __DIR__ . "/../analysis/cache/tcat_error_ratelimit_and_gap_$ts.sql";
                 logit($logtarget, $cmd);
                 system($cmd);
+
+                /*
+                 * First part: rate limits
+                 */
 
                 /*
                  * Strategy:
@@ -682,6 +686,8 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                 $timestamp_fixed_dateformat = $results['timestamp_fixed_dateformat'];
                 if ($timestamp_fixed_dateformat) {
                     logit($logtarget, "Dateformat fix found at '$timestamp_fixed_dateformat' (unix)");
+                } else {
+                    $timestamp_fixed_dateformat = $now_unix;
                 }
 
                 logit($logtarget, "Processing everything before MySQL date $now");
@@ -844,6 +850,161 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                 $rec = $dbh->prepare($sql);
                 $rec->execute();
 
+                /*
+                 * Second part: gaps
+                 */
+
+                logit($logtarget, "Now rebuilding tcat_error_gap table");
+
+                $existing_roles = array ( 'track', 'follow', 'onepercent' );
+                foreach ($existing_roles as $type) {
+
+                    $time_begin_gap = $timestamp_begin_gap = null;
+
+                    // Note: 1970-01-01 is the Unix timestamp for NULL. It is written to the database whenever there was a gap with an 'unknown' start time, due to the fact that there is
+                    // not proc/ information available to the controller.
+
+                    $sql = "select min(start) as time_begin_gap, unix_timestamp(min(start)) as timestamp_begin_gap FROM tcat_error_gap where type = '$type' and start > '1970-01-01 01:01:00'";
+                    $rec = $dbh->prepare($sql);
+                    $rec->execute();
+                    if ($rec->execute() && $rec->rowCount() > 0) {
+                        while ($row = $rec->fetch(PDO::FETCH_ASSOC)) {
+                            $time_begin_gap = $row['time_begin_gap'];
+                            $timestamp_begin_gap = $row['timestamp_begin_gap'];
+                        }
+                    }
+
+                    if (!$now || !$now_unix || !$time_begin_gap || !$timestamp_begin_gap) {
+                        logit($logtarget, "Nothing to do for role $type");
+                        continue;
+                    }
+
+                    $difference_minutes = round(($now_unix / 60 - $timestamp_begin_gap / 60) + 1);
+                    logit($logtarget, "For role $type, we have gap information on this server for the past $difference_minutes minutes.");
+
+                    $gaps = array();
+
+                    $sql = "select * from tcat_error_gap where type = '$type' and start > '1970-01-01 01:01:00' and end < '$now' order by id, start asc";
+                    $rec = $dbh->prepare($sql);
+                    $rec->execute();
+                    $ignore_start = $already_recorded_until = null;
+                    while ($row = $rec->fetch(PDO::FETCH_ASSOC)) {
+                        if ($row['start'] == $ignore_start) { continue; }
+                        if ($already_recorded_until) {
+                            $sql2 = "select '" . $row['start'] . "' > '$already_recorded_until'";
+                            $rec2 = $dbh->prepare($sql2);
+                            $rec2->execute();
+                            $later_in_time = $rec2->fetchColumn();
+                            if ($later_in_time != '1') {
+                                // Not registering the gap starting at $row['start'] here, because it is already accounted for.
+                                continue;
+                            }
+                        }
+
+                        $sql2 = "select max(end) as max_end from tcat_error_gap where type = '$type' and start = '" . $row['start'] . "'";
+                        $rec2 = $dbh->prepare($sql2);
+                        $rec2->execute();
+                        $max_end = null;
+                        while ($row2 = $rec2->fetch(PDO::FETCH_ASSOC)) {
+                            $max_end = $row2['max_end'];
+                            break;
+                        }
+                        if ($max_end) {
+                            // Example: '2016-04-19 03:12:44'
+                            if (preg_match("/^([0-9][0-9][0-9][0-9])\-([0-9][0-9])\-([0-9][0-9]) ([0-9][0-9]):([0-9][0-9]):([0-9][0-9])$/", $max_end, $matches_end) &&
+                                preg_match("/^([0-9][0-9][0-9][0-9])\-([0-9][0-9])\-([0-9][0-9]) ([0-9][0-9]):([0-9][0-9]):([0-9][0-9])$/", $row['start'], $matches_start)) {
+
+                                // Drop a distrusted minute measurement due to previous dateformat bug
+
+                                // This first defines the gap as wide as possible (with an hourly precision). Afterwards we prune it by searching the real capture data.
+
+                                $matches_start[5] = '00';   // minutes start
+                                $matches_start[6] = '00';   // seconds start
+                                $matches_end[5] = '59';     // minutes end
+                                $matches_end[6] = '59';     // seconds end
+
+                                $new_start = $matches_start[1] . '-' . $matches_start[2] . '-' . $matches_start[3] . ' ' .
+                                             $matches_start[4] . ':' . $matches_start[5] . ':' . $matches_start[6];
+                                $new_end = $matches_end[1] . '-' . $matches_end[2] . '-' . $matches_end[3] . ' ' .
+                                           $matches_end[4] . ':' . $matches_end[5] . ':' . $matches_end[6];
+
+                                // logit($logtarget, "Detected possible gap from '" . $new_start . "' to '" . $new_end . "' - now investigating");
+
+                                $reduced = reduce_gap_size($type, $new_start, $new_end);
+                                if (is_null($reduced)) {
+                                    logit($logtarget, "Erroneous gap report for role $type from '" . $new_start . "' to '" . $new_end . "'");
+                                } else {
+                                    $new_start = $reduced['shrunk_start'];
+                                    $new_end = $reduced['shrunk_end'];
+                                
+                                    logit($logtarget, "Recording gap for role $type from '" . $new_start . "' to '" . $new_end . "'");
+                                    $duplicate = false;
+                                    foreach ($gaps as $gap) {
+                                        if ($gap['start'] == $new_start && $gap['end'] == $new_end) {
+                                            $duplicate = true;
+                                        }
+                                    }
+                                    if (!$duplicate) {
+                                        $gap = array( 'start' => $new_start, 'end' => $new_end );
+                                        $gaps[] = $gap;
+                                    }
+
+                                    $ignore_start = $row['start'];
+                                    $already_recorded_until = $new_end;
+                                }
+                            }
+                        }
+                    }
+
+                    // By using a TRANSACTION block here, we ensure the tcat_error_gap will not end up in an undefined state
+
+                    $dbh->beginTransaction();
+
+                    $sql = "delete from tcat_error_gap where type = '$type' and end <= '$now'";
+                    $rec = $dbh->prepare($sql);
+                    $rec->execute();
+
+                    // Knit hours togheter
+                    $newgaps = array();
+                    $first = true;
+                    $previous_start = $previous_end = null;
+                    foreach ($gaps as $gap) {
+                        if ($first) {
+                            $previous_start = $gap['start'];
+                            $previous_end = $gap['end'];
+                            $first = false;
+                            continue;
+                        }
+                        $sql = "select timediff('" . $gap['start'] . "', '$previous_end') as difference";
+                        $rec = $dbh->prepare($sql);
+                        $rec->execute();
+                        $difference = null;
+                        while ($row = $rec->fetch(PDO::FETCH_ASSOC)) {
+                            $difference = $row['difference'];
+                            break;
+                        }
+                        if (isset($difference) && $difference == '00:00:01') {
+                            // Keep on knittin'
+                            $previous_end = $gap['end'];
+                        } else {
+                            $newgaps[] = array ( 'start' => $previous_start, 'end' => $previous_end );
+                            $previous_start = $gap['start'];
+                            $previous_end = $gap['end'];
+                        }
+                    }
+                    $gaps = $newgaps;
+
+                    foreach ($gaps as $gap) {
+                        $sql = "insert into tcat_error_gap ( `type`, `start`, `end` ) values ( '$type', '" . $gap['start'] . "', '" . $gap['end'] . "' )";
+                        $rec = $dbh->prepare($sql);
+                        $rec->execute();
+                    }
+
+                    $dbh->commit();
+
+                }
+
+                logit($logtarget, "Rebuilding of tcat_error_gap has finished");
 
             }
         }
@@ -1037,6 +1198,94 @@ function ratelimit_smoother($dbh, $timestamp_fixed_dateformat, $role, $start, $e
 
     }
 
+}
+
+/*
+ * This function takes two MySQL formatted datetime strings. These parameters are the widest possible gap (defined with HOURLY accuracy).
+ * The function seeks to improve the accuracy as much as possible by searching real capture data across all bins of the same type.
+ * If any data is found inside our gap-frame. We shrink the gap and return the new dimensions.
+ */
+function reduce_gap_size($type, $start, $end) {
+    global $all_bins;
+    $dbh = pdo_connect();
+
+    $shrunk_start = $start;
+    $shrunk_end = $end;
+
+    $sql = "create temporary table gap_searcher ( measurement datetime primary key )";
+    $rec = $dbh->prepare($sql);
+    $rec->execute();
+
+    foreach ($all_bins as $bin) {
+
+        // Filter to only consider bins with the tracking role under consideration
+        $bintype = getBinType($bin, $dbh);
+        if ($bintype == 'geotrack') { $bintype = 'track'; }
+        if ($bintype != $type) { 
+            continue;
+        }
+
+        $sql = "insert ignore into gap_searcher select created_at from $bin" . "_tweets
+                       where created_at > '$start' and created_at < '$end'";
+        $rec = $dbh->prepare($sql);
+        $rec->execute();
+    }
+    
+    $sql = "select measurement from gap_searcher order by measurement asc";
+    $rec = $dbh->prepare($sql);
+    $rec->execute();
+    $date_previous = null;
+    $biggest_gap = -1;
+    $biggest_gap_start = $biggest_gap_end = null;
+    while ($row = $rec->fetch(PDO::FETCH_ASSOC)) {
+        $date = $row['measurement'];
+        if (is_null($date_previous)) {
+            $date_previous = $date;
+            continue;
+        }
+        $sql2 = "select timediff('$date', '$date_previous') as gap_size";
+        $rec2 = $dbh->prepare($sql2);
+        $rec2->execute();
+        $gap_size = null;
+        while ($row2 = $rec2->fetch(PDO::FETCH_ASSOC)) {
+            if (isset($row2['gap_size'])) {
+                $gap_size = $row2['gap_size'];
+            }
+        }
+        if ($gap_size) {
+            if (preg_match("/^([0-9]*):([0-9]*):([0-9]*)$/", $gap_size, $matches)) {
+                $hours = intval($matches[1]); $minutes = intval($matches[2]); $seconds = intval($matches[3]);
+                $gap_in_seconds = $seconds + $minutes * 60 + $hours * 3600;
+                if ($gap_in_seconds < 15) {
+                    // As per controller behaviour, we do not consider this a gap.
+                    continue;
+                }
+                if ($gap_in_seconds > $biggest_gap) {
+                    $biggest_gap = $gap_in_seconds;
+                    $biggest_gap_start = $date_previous;
+                    $biggest_gap_end = $date;
+                }
+            }
+        }
+        $date_previous = $date; 
+    }
+
+    if ($biggest_gap !== -1) {
+        $shrunk_start = $biggest_gap_start;
+        $shrunk_end = $biggest_gap_end;
+    }
+
+    if ($biggest_gap == 1) {
+        // This is a situation where there doesn't appear to be a real data gap
+        return null;
+    }
+
+    $sql = "drop table gap_searcher";
+    $rec = $dbh->prepare($sql);
+    $rec->execute();
+
+    $dbh = null;
+    return array( 'shrunk_start' => $shrunk_start, 'shrunk_end' => $shrunk_end );
 }
 
 function get_executable($binary) {

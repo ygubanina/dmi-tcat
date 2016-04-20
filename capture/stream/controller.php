@@ -167,7 +167,7 @@ foreach ($roles as $role) {
     $pid = 0;
     $last = 0;
     $running = false;
-    if (file_exists(__DIR__ . '/../../proc/$role.procinfo')) {
+    if (file_exists(__DIR__ . "/../../proc/$role.procinfo")) {
 
         $procfile = read_procfile(__DIR__ . "/../../proc/$role.procinfo");
         $pid = $procfile['pid'];
@@ -185,6 +185,7 @@ foreach ($roles as $role) {
         if ($reload || $idled) {
 
             // record confirmed gap
+            logit("controller.log", "recording a data gap for script $role from '" . toDateTime($last) . "' to '" . toDateTime(time()) . "'");
             gap_record($role, $last, time());
 
             if ($running) {
@@ -256,7 +257,10 @@ foreach ($roles as $role) {
 
             // record confirmed gap if we could measure it
             if ($last) {
+                logit("controller.log", "recording a data gap for script $role from '" . toDateTime($last) . "' to '" . toDateTime(time()) . "'");
                 gap_record($role, $last, time());
+            } else {
+                logit("controller.log", "we have no information about previous running time of script $role - cannot record a gap");
             }
 
             // a forked process may inherit our lock, but we prevent this.

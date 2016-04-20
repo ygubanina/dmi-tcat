@@ -445,10 +445,22 @@ function gap_record($role, $ustart, $uend) {
         return TRUE;
     }
     $dbh = pdo_connect();
-    $sql = "insert into tcat_error_gap ( type, start, end ) values ( :role, :start, :end)";
-    $h = $dbh->prepare($sql);
     $ustart = toDateTime($ustart);
     $uend = toDateTime($uend);
+
+    $sql = "select 1 from tcat_error_gap where type = :role and start = :start";
+    $h = $dbh->prepare($sql);
+    $h->bindParam(":role", $role, PDO::PARAM_STR);
+    $h->bindParam(":start", $ustart, PDO::PARAM_STR);
+    $h->execute();
+    if ($rec->execute() && $rec->rowCount() > 0) {
+        // Extend an existing gap record
+        $sql = "update tcat_error_gap set end = :end where type = :role and start = :start"; 
+    } else {
+        // Insert a new gap record
+        $sql = "insert into tcat_error_gap ( type, start, end ) values ( :role, :start, :end)";
+    }
+    $h = $dbh->prepare($sql);
     $h->bindParam(":role", $role, PDO::PARAM_STR);
     $h->bindParam(":start", $ustart, PDO::PARAM_STR);
     $h->bindParam(":end", $uend, PDO::PARAM_STR);
@@ -638,8 +650,11 @@ function getActivePhrases() {
  * What type is a bin (track, geotrack, follow, onepercent)
  */
 
-function getBinType($binname) {
-    $dbh = pdo_connect();
+function getBinType($binname, $dbh = null) {
+    $dbh_parm = is_null($dbh) ? false : true;
+    if (!$dbh_parm) {
+        $dbh = pdo_connect();
+    }
     $sql = "SELECT querybin, `type` FROM tcat_query_bins WHERE querybin = :querybin";
     $rec = $dbh->prepare($sql);
     $rec->bindParam(':querybin', $binname);
@@ -652,7 +667,9 @@ function getBinType($binname) {
             }
         }
     }
-    $dbh = false;
+    if (!$dbh_parm) {
+        $dbh = false;
+    }
     return false;
 }
 
