@@ -453,7 +453,7 @@ function gap_record($role, $ustart, $uend) {
     $h->bindParam(":role", $role, PDO::PARAM_STR);
     $h->bindParam(":start", $ustart, PDO::PARAM_STR);
     $h->execute();
-    if ($rec->execute() && $rec->rowCount() > 0) {
+    if ($h->execute() && $h->rowCount() > 0) {
         // Extend an existing gap record
         $sql = "update tcat_error_gap set end = :end where type = :role and start = :start"; 
     } else {
