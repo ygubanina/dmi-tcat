@@ -57,8 +57,8 @@ require_once __DIR__ . '/common/CSV.class.php';
         if ($sqlresults) {
             while ($data = mysql_fetch_assoc($sqlresults)) {
                 // the query bin must have been active during the gap period, if we want to report it as a possible gap
-                $sql2 = "SELECT count(*) as cnt FROM tcat_query_bins_phrases WHERE querybin = $bin_id and
-                                                            starttime < '" . $data["end"] . "' and (endtime > '" . $data["start"] . "' or endtime is null)";
+                $sql2 = "SELECT count(*) as cnt FROM tcat_query_bins_phrases WHERE querybin_id = $bin_id and
+                                                            starttime < '" . $data["end"] . "' and (endtime > '" . $data["start"] . "' or endtime is null or endtime = '0000-00-00 00:00:00')";
                 $sqlresults2 = mysql_query($sql2);
                 if ($sqlresults2) {
                     if ($data2 = mysql_fetch_assoc($sqlresults2)) {
