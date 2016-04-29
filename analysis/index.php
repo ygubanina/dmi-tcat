@@ -936,6 +936,13 @@ foreach ($linedata as $key => $value) {
                     <div class="txt_desc">Use: Gain insight in possible missing data due to outages</div>
                     <div class="txt_link"> &raquo; <a href="" onclick="$('#whattodo').val('gaps');sendUrl('mod.gaps.php');return false;">launch</a></div>
 
+                    <hr/>
+
+                    <h3>System-wide rate limit in data</h3>
+                    <div class="txt_desc">Exports a spreadsheet with all known ratelimit occurances, across all query bins, but within your specified date range and interval.</div>
+                    <div class="txt_desc">Use: Gain insight in possible missing data due to excessive querying</div>
+                    <div class="txt_link"> &raquo; <a href="" onclick="$('#whattodo').val('ratelimits'+getInterval());sendUrl('mod.ratelimits.php');return false;">launch</a></div>
+
                     <?php if (isset($_GET['dataset']) && $_GET['dataset'] == "privacy") { ?>
                         <hr />
 

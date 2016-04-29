@@ -8,7 +8,7 @@ require_once __DIR__ . '/common/CSV.class.php';
 
 <html xmlns="http://www.w3.org/1999/xhtml">
     <head>
-        <title>TCAT :: Export gap data</title>
+        <title>TCAT :: Export system-wide ratelimit data</title>
 
         <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
 
@@ -24,39 +24,37 @@ require_once __DIR__ . '/common/CSV.class.php';
 
     <body>
 
-        <h1>TCAT :: Export gap data</h1>
+        <h1>TCAT :: Export system-wide ratelimit data</h1>
 
         <?php
         validate_all_variables();
         // make filename and open file for write
-        $module = "gapData";
-        $sql = "SELECT querybin, `type` FROM tcat_query_bins WHERE querybin = '" . mysql_real_escape_string($_GET['dataset']) . "'";
-        $sqlresults = mysql_query($sql);
-        if ($res = mysql_fetch_assoc($sqlresults)) {
-            $bintype = $res['type'];
-        } else {
-            $bintype = 'other';
-        }
+        $module = "ratelimitData";
         $exportSettings = array();
         if (isset($_GET['exportSettings']) && $_GET['exportSettings'] != "")
             $exportSettings = explode(",", $_GET['exportSettings']);
         if ((isset($_GET['location']) && $_GET['location'] == 1))
             $module = "geoTweets";
-        $filename = get_filename_for_export($module, implode("_", $exportSettings));
+        $filename = str_replace($_GET['dataset'], 'tcat_systemwide', get_filename_for_export($module, implode("_", $exportSettings)));
         $csv = new CSV($filename, $outputformat);
+
         // write header
-        $header = "start,end";
+        $header = "capture role,datetime,tweets";
         $csv->writeheader(explode(',', $header));
 
         // make query
-        $sql = "SELECT * FROM tcat_error_gap WHERE type = '" . mysql_real_escape_string($bintype) . "' and start >= '" . mysql_real_escape_string($_GET['startdate']) . "' and end <= '" . mysql_real_escape_string($_GET['enddate']) . "'";
+        $sql = "SELECT type, sum(tweets) as sum_tweets, " . str_replace('t.created_at', 'start', sqlInterval()) .  " FROM tcat_error_ratelimit WHERE start >= '" . mysql_real_escape_string($_GET['startdate']) . "' and end <= '" . mysql_real_escape_string($_GET['enddate']) . "' group by datepart order by type, datepart asc";
+//        global $interval;
+//        print_r($interval);
+//        print_r($sql);exit();
         // loop over results and write to file
         $sqlresults = mysql_query($sql);
         if ($sqlresults) {
             while ($data = mysql_fetch_assoc($sqlresults)) {
                 $csv->newrow();
-                $csv->addfield($data["start"]);
-                $csv->addfield($data["end"]);
+                $csv->addfield($data["type"]);
+                $csv->addfield($data["datepart"]);
+                $csv->addfield($data["sum_tweets"], 'integer');
                 $csv->writerow();
             }
         }
