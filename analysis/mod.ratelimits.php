@@ -27,6 +27,13 @@ require_once __DIR__ . '/common/CSV.class.php';
         <h1>TCAT :: Export system-wide ratelimit data</h1>
 
         <?php
+
+        /*
+         * TODO: Currently this function only exports system-wide TCAT ratelimit figures.
+         *       We want to create a realistic estimate of how many tweets where ratelimited per bin and per interval whilst:
+         *       1) accounting for the relative distribution of tweets per bin in that particular interval (which will fluctuate); this will make the query heavy
+         *       2) be mindful of the fact that a single tweet (with a unique tweet id) may end up in multiple query bins
+         */
         validate_all_variables();
         // make filename and open file for write
         $module = "ratelimitData";
@@ -39,14 +46,11 @@ require_once __DIR__ . '/common/CSV.class.php';
         $csv = new CSV($filename, $outputformat);
 
         // write header
-        $header = "capture role,datetime,tweets";
+        $header = "capture role,datetime,tweets limited";
         $csv->writeheader(explode(',', $header));
 
         // make query
         $sql = "SELECT type, sum(tweets) as sum_tweets, " . str_replace('t.created_at', 'start', sqlInterval()) .  " FROM tcat_error_ratelimit WHERE start >= '" . mysql_real_escape_string($_GET['startdate']) . "' and end <= '" . mysql_real_escape_string($_GET['enddate']) . "' group by datepart order by type, datepart asc";
-//        global $interval;
-//        print_r($interval);
-//        print_r($sql);exit();
         // loop over results and write to file
         $sqlresults = mysql_query($sql);
         if ($sqlresults) {
