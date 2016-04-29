@@ -716,6 +716,23 @@ function current_collation() {
     return $collation;
 }
 
+// This function accesses the tcat_status table (if it exists) and retrieves the value for a variable
+function get_status($variable) {
+	global $hostname, $dbuser, $dbpass, $database;
+    global $esc;
+    $sql = "SELECT table_name FROM information_schema.tables WHERE table_schema = '$database' AND table_name = 'tcat_status'";
+	db_connect($hostname, $dbuser, $dbpass, $database);
+    $sqlresults = mysql_query($sql);
+    if (mysql_num_rows($sqlresults) > 0) {
+        $sql = "SELECT value FROM tcat_status WHERE variable = '" . mysql_real_escape_string($variable) . "'";
+        $sqlresults = mysql_query($sql);
+        if ($res = mysql_fetch_assoc($sqlresults)) {
+            return $res['value'];
+        }
+    }
+    return null;
+}
+
 // Output format: {dataset}-{startdate}-{enddate}-{query}-{exclude}-{from_user_name}-{from_user_lang}-{url_query}-{module_name}-{module_settings}-{hash}.{filetype}
 function get_filename_for_export($module, $settings = "", $filetype = "csv") {
     global $resultsdir, $esc;

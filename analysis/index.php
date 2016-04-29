@@ -327,6 +327,8 @@ if (defined('ANALYSIS_URL'))
                         $show_url_export = true;
                 }
             }
+            // see whether database is up-to-date to export ratelimit and gap tables
+            $show_ratelimit_and_gap_export = get_status('ratelimit_database_rebuild') == 2 ? true : false;
             // see whether the lang table exists
             $show_lang_export = FALSE;
             $sql = "SHOW TABLES LIKE '" . $esc['mysql']['dataset'] . "_lang'";
@@ -815,10 +817,16 @@ foreach ($linedata as $key => $value) {
 
                     <?php } ?>
 
+                    <?php if ($show_ratelimit_and_gap_export) { ?>
+
+                    <hr />
+
                     <h3>Export table with potential holes in your data</h3>
                     <div class="txt_desc">Exports a spreadsheet with all known data holes in your current query, during which TCAT was not running or capturing.</div>
                     <div class="txt_desc">Use: Gain insight in possible missing data due to outages</div>
                     <div class="txt_link"> &raquo; <a href="" onclick="$('#whattodo').val('gaps');sendUrl('mod.gaps.php');return false;">launch</a></div>
+
+                    <?php } ?>
 
                     <hr/>
 
@@ -936,12 +944,17 @@ foreach ($linedata as $key => $value) {
                     <div class="txt_desc">Use: explore shifts in hashtags associations.</div>
                     <div class="txt_link"> &raquo; <a href="" onclick="$('#whattodo').val('hashtag_variability');sendUrl('mod.hashtag_variability.php');return false;">launch</a></div>
 
+                    <?php if ($show_ratelimit_and_gap_export) { ?>
+
                     <hr/>
 
-                    <h3>System-wide rate limit in data</h3>
-                    <div class="txt_desc">Exports a spreadsheet with all known ratelimit occurances, across all query bins, but within your specified date range and interval.</div>
+                    <h3>Export an estimation of the number of rate limited tweets in your data (<i>untrusted, work-in-progress code</i>)</h3>
+                    <div class="txt_desc">Exports a spreadsheet with an estimation of the ammount of non-captured tweets in your query due to ratelimit occurances.</div>
                     <div class="txt_desc">Use: Gain insight in possible missing data due to excessive querying</div>
                     <div class="txt_link"> &raquo; <a href="" onclick="$('#whattodo').val('ratelimits'+getInterval());sendUrl('mod.ratelimits.php');return false;">launch</a></div>
+
+                    <?php } ?>
+
 
                     <?php if (isset($_GET['dataset']) && $_GET['dataset'] == "privacy") { ?>
                         <hr />

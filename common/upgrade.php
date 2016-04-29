@@ -603,7 +603,7 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
         }
     }
 
-    $sql = "select value from tcat_status where variable = 'ratelimit_database_rebuild' and value = '1'";
+    $sql = "select value from tcat_status where variable = 'ratelimit_database_rebuild' and value > 0";
     $rec = $dbh->prepare($sql);
     if (!$rec->execute() || $rec->rowCount() == 0) {
         $already_updated = false;
@@ -1092,6 +1092,12 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                     }
 
                     logit($logtarget, "Rebuilding of tcat_error_gap has finished");
+
+                    // Indicate to the analytics panel we have fully executed this upgrade step and export functions can become available
+
+                    $sql = "update tcat_status set value = 2 where variable = 'ratelimit_database_rebuild'";
+                    $rec = $dbh->prepare($sql);
+                    $rec->execute();
 
                 }
             }
