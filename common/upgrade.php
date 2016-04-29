@@ -645,16 +645,22 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                 putenv('MYSQL_PWD=' . $dbpass);     /* this avoids having to put the password on the command-line */
 
                 $ts = time();
-                logit($logtarget, "Backuping existing tcat_error_ratelimit and tcat_error_gap information to your analysis/cache directory.");
-                $cmd = "$bin_mysqldump --default-character-set=utf8mb4 -u$dbuser -h $hostname $database tcat_error_ratelimit tcat_error_gap > " . __DIR__ . "/../analysis/cache/tcat_error_ratelimit_and_gap_$ts.sql";
-                system($cmd, $retval);
+                logit($logtarget, "Backuping existing tcat_error_ratelimit and tcat_error_gap information to your systems temporary directory.");
+                $targetfile = sys_get_temp_dir() . "/tcat_error_ratelimit_and_gap_$ts.sql";
+                if (!file_exists($targetfile)) {
+                    $cmd = "$bin_mysqldump --default-character-set=utf8mb4 -u$dbuser -h $hostname $database tcat_error_ratelimit tcat_error_gap > " . $targetfile;
+                    system($cmd, $retval);
+                } else {
+                    $retval = 1;    // failure
+                }
                 if ($retval != 0) {
-                    logit($logtarget, "I couldn't create a backup. Is your ../analysis/cache directory writable for the current user? Aborting this upgrade step.");
+                    logit($logtarget, "I couldn't create a backup at $targetfile - perhaps the backup already exists? Aborting this upgrade step.");
                 } else {
                     logit($logtarget, $cmd);
-                    $cmd = "$bin_gzip " .  __DIR__ . "/../analysis/cache/tcat_error_ratelimit_and_gap_$ts.sql";
+                    $cmd = "$bin_gzip $targetfile";
                     logit($logtarget, $cmd);
                     system($cmd);
+                    logit($logtarget, "Backup placed here - you may want to store it somewhere else: " . $targetfile . '.gz');
 
                     /*
                      * First part: rate limits
