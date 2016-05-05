@@ -392,6 +392,16 @@ function create_admin() {
         $rec->execute();
     }
 
+    // 05/05/2016 Create a global lookup table to matching phrases to tweets
+    $sql = "CREATE TABLE IF NOT EXISTS tcat_captured_phrases (
+    `tweet_id` BIGINT(20) NOT NULL,
+    `phrase_id` BIGINT(20) NOT NULL,
+    `created_at` DATETIME NOT NULL,
+    PRIMARY KEY (`tweet_id`, `phrase_id`),
+    KEY `created_at` (`created_at`) ) ENGINE = MyISAM DEFAULT CHARSET = utf8mb4";
+    $create = $dbh->prepare($sql);
+    $create->execute();
+
     $dbh = false;
 
 }
@@ -810,6 +820,22 @@ function getActiveTrackBins() {
     }
     $dbh = false;
     return $querybins;
+}
+
+// This function returns a phrase_string:phrase_id associative array
+
+function getActivePhraseIds() {
+    $dbh = pdo_connect();
+    $sql = "SELECT p.phrase as phrase, p.id as id FROM tcat_query_bins b, tcat_query_phrases p, tcat_query_bins_phrases bp WHERE b.active = 1 AND bp.querybin_id = b.id AND bp.phrase_id = p.id AND bp.endtime = '0000-00-00 00:00:00'";
+    $rec = $dbh->prepare($sql);
+    $phrase_ids = array();
+    if ($rec->execute() && $rec->rowCount() > 0) {
+        while ($res = $rec->fetch()) {
+            $phrase_ids[$res['phrase']] = $res['id'];
+        }
+    }
+    $dbh = false;
+    return $phrase_ids;
 }
 
 function getActiveFollowBins() {
@@ -1835,11 +1861,43 @@ class UrlCollection implements IteratorAggregate {
 
 }
 
+// This function takes a one-dimensional array with sets of the following data: tweet_id, phrase_id, created_at
+// It inserts this data into the MySQL database using a multi-insert statement
+function insert_captured_phrase_ids($captured_phrase_ids) {
+    global $dbuser, $dbpass, $database, $hostname;
+    global $have_table_tcat_captured_phrases;
+    if (empty($captured_phrase_ids)) return;
+    if (!isset($have_table_tcat_captured_phrases) || $have_table_tcat_captured_phrases === FALSE) return;
+    $dbh = pdo_connect();
+
+    // construct insert SQL
+
+    $moresets = 0;
+    if (count($captured_phrase_ids) > 3) {
+        $moresets = count($captured_phrase_ids) / 3 - 1;
+    }
+    $sql = "INSERT " . (DISABLE_INSERT_IGNORE ? "" : 'IGNORE') . " INTO tcat_captured_phrases ( tweet_id, phrase_id, created_at ) VALUES ( ?, ?, ? )" . str_repeat(", (?, ?, ?)", $moresets);
+    $h = $dbh->prepare($sql);
+    for ($i = 0; $i < count($captured_phrase_ids); $i++) {
+        // bindParam() expects its first parameter ( index of the ? placeholder ) to start with 1
+        if ($i % 3 == 2)  {
+            $h->bindParam($i + 1, $captured_phrase_ids[$i], PDO::PARAM_STR);
+        } else {
+            $h->bindParam($i + 1, $captured_phrase_ids[$i], PDO::PARAM_INT);
+        }
+    }
+    $h->execute();
+
+    $dbh = false;
+
+}
+
 /*
  * Start a tracking process
  */
 
 function tracker_run() {
+    global $dbuser, $dbpass, $database, $hostname;
 
     global $tweetQueue;
     $tweetQueue = new TweetQueue();
@@ -1852,6 +1910,19 @@ function tracker_run() {
     } else {
         $tweetQueue->setoption('ignore', true);
     }
+
+    // Register (globally) whether we have a tcat_captured_phrases table
+
+    global $have_table_tcat_captured_phrases;
+    $dbh = pdo_connect();
+    $sql = "SELECT * FROM information_schema.tables WHERE table_schema = '$database' AND table_name = 'tcat_capture_phrases'";
+    $test = $dbh->prepare($sql);
+    $test->execute();
+    $have_table_tcat_captured_phrases = false;
+    if ($test->rowCount() == 0) {
+        $have_table_tcat_captured_phrases = true;
+    }
+    $dbh = false;
 
     if (!defined("CAPTURE")) {
 
@@ -2093,10 +2164,13 @@ function processtweets($capturebucket) {
     global $tweetQueue;
 
     $querybins = getActiveBins();
+    $phrase_ids = getActivePhraseIds();
 
     // cache bin types
     $bintypes = array();
     foreach ($querybins as $binname => $queries) $bintypes[$binname] = getBinType($binname);
+
+    $captured_phrase_ids = array();
 
     // running through every single tweet
     foreach ($capturebucket as $data) {
@@ -2272,10 +2346,14 @@ function processtweets($capturebucket) {
                             }
                         }
 
-                        // at the first fitting query, we break
+                        // at the first fitting query, we set found to true (to indicate we should insert the tweet into the database)
+                        // we also register the fact thisk keyword query has been matched
                         if ($pass == true) {
                             $found = true;
-                            break;
+//                            $captured_phrase_ids[] = array ( 'created_at' => date("Y-m-d H:i:s", strtotime($data["created_at"])), 'tweet_id' => $data['id_str'], 'phrase_id' => $phrase_ids[$query] );
+                            $captured_phrase_ids[] = $data['id_str'];
+                            $captured_phrase_ids[] = $phrase_ids[$query];
+                            $captured_phrase_ids[] = date("Y-m-d H:i:s", strtotime($data["created_at"]));
                         }
                     }
                 }
@@ -2300,6 +2378,10 @@ function processtweets($capturebucket) {
         }
     }
     $tweetQueue->insertDB();
+    if (!empty($captured_phrase_ids)) {
+        print_r($captured_phrase_ids);
+    }
+    insert_captured_phrase_ids($captured_phrase_ids);
     return TRUE;
 }
 
