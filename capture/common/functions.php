@@ -40,7 +40,16 @@ function geophp_sane() {
 }
 
 function create_error_logs() {
+    global $dbuser, $dbpass, $database, $hostname;
     $dbh = pdo_connect();
+
+    $creating_tables_for_fresh_install = false;
+    $sql = "SELECT * FROM information_schema.tables WHERE table_schema = '$database' AND table_name = 'tcat_error_gap'";
+    $test = $dbh->prepare($sql);
+    $test->execute();
+    if ($test->rowCount() == 0) {
+        $creating_tables_for_fresh_install = true;
+    }
 
     $sql = 'create table if not exists tcat_error_ratelimit ( id bigint auto_increment, type varchar(32), start datetime not null, end datetime not null, tweets bigint not null, primary key(id), index(type), index(start), index(end) ) ENGINE=MyISAM';
     $h = $dbh->prepare($sql);
@@ -65,12 +74,21 @@ function create_error_logs() {
     $create = $dbh->prepare($sql);
     $create->execute();
 
+
     $sql = "select value from tcat_status where variable = 'ratelimit_format_modified_at'";
     $test = $dbh->prepare($sql);
     $test->execute();
     if ($test->rowCount() == 0) {
         // We are registering ratelimits in the new gauge-style and store the timestamp of the start of this new behaviour
         $sql = "insert into tcat_status ( variable, value ) values ( 'ratelimit_format_modified_at', now() )";
+        $insert = $dbh->prepare($sql);
+        $insert->execute();
+    }
+    
+    // When creating tables for a fresh install, set tcat_status variable to indicate we have up-to-date ratelimit and gap tables
+
+    if ($creating_tables_for_fresh_install) {
+        $sql = "insert into tcat_status ( variable, value ) values ( 'ratelimit_database_rebuild', 2 )";
         $insert = $dbh->prepare($sql);
         $insert->execute();
     }
