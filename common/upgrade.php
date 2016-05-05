@@ -1093,6 +1093,45 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
 
                     logit($logtarget, "Rebuilding of tcat_error_gap has finished");
 
+                    // For ratelimit exports to function, we want to have the tcat_captured_phrases table
+                    logit($logtarget, "Creating the tcat_captured_phrases table");
+
+                    create_admin();
+                    $trackbins = get_track_bin_phrases();
+
+                    foreach ($trackbins as $querybin => $phrases) {
+                        logit($logtarget, "Extracting keyword phrase matches from querybin $querybin and inserting into tcat_captured_phrases ..");
+                        foreach ($phrases as $phrase => $phrase_id) {
+                            if (substr($phrase, 0, 1) !== "'" && strpos($phrase, ' ') !== false) {
+                                // The user intends a AND match here, such as: [ scottish AND independence ]
+                                // Both words should be in the tweet, but not neccessarily next to each other ( according to the documentation: https://github.com/digitalmethodsinitiative/dmi-tcat/wiki/FAQ#keyword-track )
+                                $subphrases = explode(' ', $phrase);
+                                $sql = "REPLACE INTO tcat_captured_phrases ( tweet_id, phrase_id, created_at ) SELECT id, $phrase_id, created_at FROM " . quoteIdent($querybin . "_tweets") . " WHERE text REGEXP ?";
+                                if (count($subphrases) > 1) {
+                                    $sql .= str_repeat(" AND text REGEXP ?", count($subphrases) - 1);
+                                }
+                                $rec = $dbh->prepare($sql);
+                                $i = 1;
+                                foreach ($subphrases as $subphrase) {
+                                    $regexp = "[[:<:]]" . $subphrase . "[[:>:]]";
+                                    $rec->bindParam($i, $regexp, PDO::PARAM_STR);
+                                    $i++;
+                                }
+                                $rec->execute();
+                            } else {
+                                // The user intends an exact string match here, such as: [ 'scottish independence' ]
+                                // Or the keyword string is a simple, single-word phrase
+                                $phrasematch = str_replace("'", "", $phrase);       // replace any occurances of the quoting character
+                                $sql = "REPLACE INTO tcat_captured_phrases ( tweet_id, phrase_id, created_at ) SELECT id, $phrase_id, created_at FROM " . quoteIdent($querybin . "_tweets") . " WHERE text REGEXP :regexp";
+                                $rec = $dbh->prepare($sql);
+                                $regexp = "[[:<:]]" . $phrasematch . "[[:>:]]"; 
+                                $rec->bindParam(":regexp", $regexp, PDO::PARAM_STR);
+                                $rec->execute();
+                            }
+                            // logit($logtarget, $sql);    // print SQL statements for debugging purposes
+                        }
+                    }
+
                     // Indicate to the analytics panel we have fully executed this upgrade step and export functions can become available
 
                     $sql = "update tcat_status set value = 2 where variable = 'ratelimit_database_rebuild'";
@@ -1390,3 +1429,19 @@ function get_executable($binary) {
     }
     return $where;
 }
+
+// Returns an array with all the (active or non-active) track bins and their associated phrases (also the no longer running ones)
+function get_track_bin_phrases() {
+    $dbh = pdo_connect();
+    $sql = "SELECT b.querybin, p.phrase, p.id FROM tcat_query_bins b, tcat_query_phrases p, tcat_query_bins_phrases bp WHERE b.type = 'track' AND bp.querybin_id = b.id AND bp.phrase_id = p.id";
+    $rec = $dbh->prepare($sql);
+    $querybins = array();
+    if ($rec->execute() && $rec->rowCount() > 0) {
+        while ($res = $rec->fetch()) {
+            $querybins[$res['querybin']][$res['phrase']] = $res['id'];
+        }
+    }
+    $dbh = false;
+    return $querybins;
+}
+

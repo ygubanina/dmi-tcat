@@ -2378,9 +2378,6 @@ function processtweets($capturebucket) {
         }
     }
     $tweetQueue->insertDB();
-    if (!empty($captured_phrase_ids)) {
-        print_r($captured_phrase_ids);
-    }
     insert_captured_phrase_ids($captured_phrase_ids);
     return TRUE;
 }
