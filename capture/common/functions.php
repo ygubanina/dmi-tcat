@@ -2347,7 +2347,7 @@ function processtweets($capturebucket) {
                         }
 
                         // at the first fitting query, we set found to true (to indicate we should insert the tweet into the database)
-                        // we also register the fact thisk keyword query has been matched
+                        // we also register the fact this keyword query has been matched
                         if ($pass == true) {
                             $found = true;
 //                            $captured_phrase_ids[] = array ( 'created_at' => date("Y-m-d H:i:s", strtotime($data["created_at"])), 'tweet_id' => $data['id_str'], 'phrase_id' => $phrase_ids[$query] );
