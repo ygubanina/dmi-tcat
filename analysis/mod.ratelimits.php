@@ -35,7 +35,6 @@ require_once __DIR__ . '/common/CSV.class.php';
          */
         validate_all_variables();
 
-        $module = "ratelimitData";
         $sql = "SELECT id, `type` FROM tcat_query_bins WHERE querybin = '" . mysql_real_escape_string($esc['mysql']['dataset']) . "'";
         $sqlresults = mysql_query($sql);
         if ($res = mysql_fetch_assoc($sqlresults)) {
@@ -49,13 +48,6 @@ require_once __DIR__ . '/common/CSV.class.php';
             echo '</body></html>';
             die();
         }
-        $exportSettings = array();
-        if (isset($_GET['exportSettings']) && $_GET['exportSettings'] != "")
-            $exportSettings = explode(",", $_GET['exportSettings']);
-        if ((isset($_GET['location']) && $_GET['location'] == 1))
-            $module = "geoTweets";
-        $filename = get_filename_for_export($module, implode("_", $exportSettings));
-        $csv = new CSV($filename, $outputformat);
         // write header
         $header = "start,end";
         $csv->writeheader(explode(',', $header));
@@ -66,7 +58,7 @@ require_once __DIR__ . '/common/CSV.class.php';
         if (isset($_GET['exportSettings']) && $_GET['exportSettings'] != "")
             $exportSettings = explode(",", $_GET['exportSettings']);
         if ((isset($_GET['location']) && $_GET['location'] == 1))
-            $module = "geoTweets";
+            $module = "rateLimitDataGeo";
         $filename = get_filename_for_export($module, implode("_", $exportSettings));
         $csv = new CSV($filename, $outputformat);
 
