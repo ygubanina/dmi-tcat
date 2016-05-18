@@ -476,7 +476,7 @@ function gap_record($role, $ustart, $uend) {
     if (!defined('IDLETIME_FOLLOW')) {
         define('IDLETIME_FOLLOW', IDLETIME);
     }
-    if ($type == 'follow') {
+    if ($role == 'follow') {
         $idletime = IDLETIME_FOLLOW;
     } else {
         $idletime = IDLETIME;
@@ -486,25 +486,23 @@ function gap_record($role, $ustart, $uend) {
         return FALSE;
     }
     $dbh = pdo_connect();
-    $mysqlstart = toDateTime($ustart);
-    $mysqlend = toDateTime($uend);
 
-    $sql = "select 1 from tcat_error_gap where type = :role and start = :start";
+    $sql = "select 1 from tcat_error_gap where type = :role and start = FROM_UNIXTIME(:start)";
     $h = $dbh->prepare($sql);
     $h->bindParam(":role", $role, PDO::PARAM_STR);
-    $h->bindParam(":start", $mysqlstart, PDO::PARAM_STR);
+    $h->bindParam(":start", $ustart, PDO::PARAM_STR);
     $h->execute();
     if ($h->execute() && $h->rowCount() > 0) {
         // Extend an existing gap record
-        $sql = "update tcat_error_gap set end = :end where type = :role and start = :start"; 
+        $sql = "update tcat_error_gap set end = FROM_UNIXTIME(:end) where type = :role and start = FROM_UNIXTIME(:start)";
     } else {
         // Insert a new gap record
-        $sql = "insert into tcat_error_gap ( type, start, end ) values ( :role, :start, :end)";
+        $sql = "insert into tcat_error_gap ( type, start, end ) values ( :role, FROM_UNIXTIME(:start), FROM_UNIXTIME(:end) )";
     }
     $h = $dbh->prepare($sql);
     $h->bindParam(":role", $role, PDO::PARAM_STR);
-    $h->bindParam(":start", $mysqlstart, PDO::PARAM_STR);
-    $h->bindParam(":end", $mysqlend, PDO::PARAM_STR);
+    $h->bindParam(":start", $ustart, PDO::PARAM_STR);
+    $h->bindParam(":end", $uend, PDO::PARAM_STR);
     $h->execute();
 }
 
