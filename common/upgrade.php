@@ -1092,7 +1092,7 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                             define('IDLETIME', 600);
                         }
                         if (!defined('IDLETIME_FOLLOW')) {
-                            define('IDLETIME_FOLLOW', 1800);
+                            define('IDLETIME_FOLLOW', IDLETIME);
                         }
                         if ($type == 'follow') {
                             $idletime = IDLETIME_FOLLOW;
@@ -1409,7 +1409,7 @@ function reduce_gap_size($type, $start, $end) {
                     define('IDLETIME', 600);
                 }
                 if (!defined('IDLETIME_FOLLOW')) {
-                    define('IDLETIME_FOLLOW', 1800);
+                    define('IDLETIME_FOLLOW', IDLETIME);
                 }
                 // As per controller behaviour, we do not consider this a gap.
                 if ($type == 'follow' && $gap_in_seconds < IDLETIME_FOLLOW ||

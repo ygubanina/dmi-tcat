@@ -470,6 +470,17 @@ function gap_record($role, $ustart, $uend) {
     // A less than IDLETIME gap doesn't make sense te record, because we assume IDLETIME seconds to be a legitimate timeframe
     // up to which we don't expect data from Twitter
     $gap_in_seconds = $uend - $ustart;
+    if (!defined('IDLETIME')) {
+        define('IDLETIME', 600);
+    }
+    if (!defined('IDLETIME_FOLLOW')) {
+        define('IDLETIME_FOLLOW', IDLETIME);
+    }
+    if ($type == 'follow') {
+        $idletime = IDLETIME_FOLLOW;
+    } else {
+        $idletime = IDLETIME;
+    }
     if ($role == 'follow' && $gap_in_seconds < IDLETIME_FOLLOW ||
         $role != 'follow' && $gap_in_seconds < IDLETIME) {
         return FALSE;
