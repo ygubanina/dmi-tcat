@@ -131,26 +131,10 @@ require_once __DIR__ . '/common/CSV.class.php';
         }
 
         foreach ($fullresults as $datepart => $row) {
-            if (!array_key_exists('ratelimited', $row)) {
-                $row['ratelimited'] = 0;
-            }
-            if (!array_key_exists('measuredbin', $row)) {
-                $row['measuredbin'] = 0;
-            }
-            if (!array_key_exists('totalphrases', $row)) {
-                if ($row['measuredbin'] > 0) {
-                    // This would clearly signify a bug. We have a totalphrases < measured phrases?
-                    // To avoid a divide by zero, exit.
-                    echo "BUG detected in resultset at datepart '$datepart'<br/>Now dumping row structure.<br/>";
-                    echo "<pre>";
-                    print_r($row);          
-                    echo "</pre>";
-                    exit();
-                }
-            }
+            if (!array_key_exists('ratelimited', $row) || !array_key_exists('measuredbin', $row) || !array_key_exists('totalphrases', $row)) continue;
 
             // Now: calculate the estimate using our formula
-            $estimate = $row['ratelimited'] * $row['measuredbin'] / $row['totalphrases'];
+            $estimate = round( $row['ratelimited'] * $row['measuredbin'] / $row['totalphrases'] );
 
             $csv->newrow();
             $csv->addfield($interval);
