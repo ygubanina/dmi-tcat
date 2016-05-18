@@ -1087,6 +1087,22 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                             $rec->execute();
                         }
 
+                        // The final step is to prune tcap_error_gap to remove all gaps lesser than IDLETIME
+                        if (!defined('IDLETIME')) {
+                            define('IDLETIME', 600);
+                        }
+                        if (!defined('IDLETIME_FOLLOW')) {
+                            define('IDLETIME_FOLLOW', 1800);
+                        }
+                        if ($type == 'follow') {
+                            $idletime = IDLETIME_FOLLOW;
+                        } else {
+                            $idletime = IDLETIME;
+                        }
+                        $sql = "delete from tcat_error_gap where time_to_sec(timediff(end,start)) < $idletime";
+                        $rec = $dbh->prepare($sql);
+                        $rec->execute();
+
                         $dbh->commit();
 
                     }
@@ -1393,7 +1409,7 @@ function reduce_gap_size($type, $start, $end) {
                     define('IDLETIME', 600);
                 }
                 if (!defined('IDLETIME_FOLLOW')) {
-                    define('IDLETIME_FOLLOW', 600);
+                    define('IDLETIME_FOLLOW', 1800);
                 }
                 // As per controller behaviour, we do not consider this a gap.
                 if ($type == 'follow' && $gap_in_seconds < IDLETIME_FOLLOW ||
