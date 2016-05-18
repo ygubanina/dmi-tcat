@@ -465,21 +465,23 @@ function ratelimit_holefiller($minutes) {
 
 function gap_record($role, $ustart, $uend) {
     if ($uend <= $ustart) {
-        return TRUE;
+        return FALSE;
     }
-    if (($uend - $ustart) < 15) {
-        // a less than 15 second gap is usually the result of a software restart/reload
-        // during that restart the tweet buffer is flushed and the gap is very tiny, therefore we ignore this
-        return TRUE;
+    // A less than IDLETIME gap doesn't make sense te record, because we assume IDLETIME seconds to be a legitimate timeframe
+    // up to which we don't expect data from Twitter
+    $gap_in_seconds = $uend - $ustart;
+    if ($role == 'follow' && $gap_in_seconds < IDLETIME_FOLLOW ||
+        $role != 'follow' && $gap_in_seconds < IDLETIME) {
+        return FALSE;
     }
     $dbh = pdo_connect();
-    $ustart = toDateTime($ustart);
-    $uend = toDateTime($uend);
+    $mysqlstart = toDateTime($ustart);
+    $mysqlend = toDateTime($uend);
 
     $sql = "select 1 from tcat_error_gap where type = :role and start = :start";
     $h = $dbh->prepare($sql);
     $h->bindParam(":role", $role, PDO::PARAM_STR);
-    $h->bindParam(":start", $ustart, PDO::PARAM_STR);
+    $h->bindParam(":start", $mysqlstart, PDO::PARAM_STR);
     $h->execute();
     if ($h->execute() && $h->rowCount() > 0) {
         // Extend an existing gap record
@@ -490,8 +492,8 @@ function gap_record($role, $ustart, $uend) {
     }
     $h = $dbh->prepare($sql);
     $h->bindParam(":role", $role, PDO::PARAM_STR);
-    $h->bindParam(":start", $ustart, PDO::PARAM_STR);
-    $h->bindParam(":end", $uend, PDO::PARAM_STR);
+    $h->bindParam(":start", $mysqlstart, PDO::PARAM_STR);
+    $h->bindParam(":end", $mysqlend, PDO::PARAM_STR);
     $h->execute();
 }
 

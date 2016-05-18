@@ -185,9 +185,8 @@ foreach ($roles as $role) {
         if ($reload || $idled) {
 
             // record confirmed gap if we could measure it
-            if ($last) {
+            if ($last && gap_record($role, $last, time())) {
                 logit("controller.log", "recording a data gap for script $role from '" . toDateTime($last) . "' to '" . toDateTime(time()) . "'");
-                gap_record($role, $last, time());
             } else {
                 logit("controller.log", "we have no information about previous running time of script $role - cannot record a gap");
             }
@@ -260,9 +259,8 @@ foreach ($roles as $role) {
             logit("controller.log", "script $role was not running - starting");
 
             // record confirmed gap if we could measure it
-            if ($last) {
+            if ($last && gap_record($role, $last, time())) {
                 logit("controller.log", "recording a data gap for script $role from '" . toDateTime($last) . "' to '" . toDateTime(time()) . "'");
-                gap_record($role, $last, time());
             } else {
                 logit("controller.log", "we have no information about previous running time of script $role - cannot record a gap");
             }

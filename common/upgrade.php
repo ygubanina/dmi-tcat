@@ -1389,7 +1389,15 @@ function reduce_gap_size($type, $start, $end) {
             if (preg_match("/^([0-9]*):([0-9]*):([0-9]*)$/", $gap_size, $matches)) {
                 $hours = intval($matches[1]); $minutes = intval($matches[2]); $seconds = intval($matches[3]);
                 $gap_in_seconds = $seconds + $minutes * 60 + $hours * 3600;
-                if ($gap_in_seconds < 15) {
+                if (!defined('IDLETIME')) {
+                    define('IDLETIME', 600);
+                }
+                if (!defined('IDLETIME_FOLLOW')) {
+                    define('IDLETIME_FOLLOW', 600);
+                }
+                // As per controller behaviour, we do not consider this a gap.
+                if ($type == 'follow' && $gap_in_seconds < IDLETIME_FOLLOW ||
+                    $type != 'follow' && $gap_in_seconds < IDLETIME) {
                     // As per controller behaviour, we do not consider this a gap.
                     continue;
                 }
