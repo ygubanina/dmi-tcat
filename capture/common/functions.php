@@ -63,13 +63,14 @@ function create_error_logs() {
      * The tcat_status variable is utilised as generic keystore to record and track aspects of this TCAT installation.
      * This is not a configuration table. The configuration of TCAT is defined in config.php, though we may wish to allow dynamically configurable
      * options in the future and this table would suit such a purpose.
-     * At the moment, this table is solely used by TCAT internally to store information such as wich upgrade step has been executed, etc.
+     * At the moment, this table is solely used by TCAT internally to store information such as wich upgrade steps have been executed, etc.
      */
 
     $sql = "CREATE TABLE IF NOT EXISTS tcat_status (
     `variable` varchar(32),
     `value` varchar(1024),
-    PRIMARY KEY `variable` (`variable`)
+    PRIMARY KEY `variable` (`variable`),
+            KEY `value` (`value`),
     ) ENGINE = MyISAM DEFAULT CHARSET = utf8mb4";
     $create = $dbh->prepare($sql);
     $create->execute();
@@ -78,8 +79,8 @@ function create_error_logs() {
     $sql = "select value from tcat_status where variable = 'ratelimit_format_modified_at'";
     $test = $dbh->prepare($sql);
     $test->execute();
-    if ($test->rowCount() == 0) {
-        // We are registering ratelimits in the new gauge-style and store the timestamp of the start of this new behaviour
+    if ($test->rowCount() == 0 && defined('CAPTURE')) {
+        // We are actively registering ratelimits in the new gauge-style and store the timestamp of the start of this new behaviour
         $sql = "insert into tcat_status ( variable, value ) values ( 'ratelimit_format_modified_at', now() )";
         $insert = $dbh->prepare($sql);
         $insert->execute();
@@ -393,6 +394,8 @@ function create_admin() {
     }
 
     // 05/05/2016 Create a global lookup table to matching phrases to tweets
+    // Thanks to this table we know how many (unique or non-unique) tweets were the result of querying the phrase.
+    // This is used to estimate in (analysis/mod.ratelimits.php) how many tweets may have been ratelimited for bins associated with the phrase
     $sql = "CREATE TABLE IF NOT EXISTS tcat_captured_phrases (
     `tweet_id` BIGINT(20) NOT NULL,
     `phrase_id` BIGINT(20) NOT NULL,
@@ -438,13 +441,13 @@ function ratelimit_holefiller($minutes) {
         logit(CAPTURE . ".error.log", "$sql");
         $h = $dbh->prepare($sql);
         $h->execute();
-        $existing = false;
         while ($res = $h->fetch()) {
             if (array_key_exists('cnt', $res) && $res['cnt'] > 0) {
-                $existing = true; break;
+                // finished
+                $dbh = false;
+                return;
             }
         }
-        if ($existing == true) break;
 
         // fill in the hole
 
@@ -842,7 +845,7 @@ function getActivePhraseIds() {
     $phrase_ids = array();
     if ($rec->execute() && $rec->rowCount() > 0) {
         while ($res = $rec->fetch()) {
-            $phrase_ids[$res['phrase']] = $res['id'];
+            $phrase_ids[trim(preg_replace("/'/", "", $res['phrase']))] = $res['id'];
         }
     }
     $dbh = false;
@@ -2322,7 +2325,12 @@ function processtweets($capturebucket) {
                         }
 
                         if ($found) {
-                            break;
+                            // found = true causes the tweet to be inserted into the database 
+                            // store phrase data (in this case a geobox definition) 
+                            $captured_phrase_ids[] = $data['id_str'];
+                            $captured_phrase_ids[] = $phrase_ids[$query];
+                            $captured_phrase_ids[] = date("Y-m-d H:i:s", strtotime($data["created_at"]));
+                            continue;
                         }
                     } else {
 
@@ -2361,7 +2369,6 @@ function processtweets($capturebucket) {
                         // we also register the fact this keyword query has been matched
                         if ($pass == true) {
                             $found = true;
-//                            $captured_phrase_ids[] = array ( 'created_at' => date("Y-m-d H:i:s", strtotime($data["created_at"])), 'tweet_id' => $data['id_str'], 'phrase_id' => $phrase_ids[$query] );
                             $captured_phrase_ids[] = $data['id_str'];
                             $captured_phrase_ids[] = $phrase_ids[$query];
                             $captured_phrase_ids[] = date("Y-m-d H:i:s", strtotime($data["created_at"]));

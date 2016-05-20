@@ -43,36 +43,74 @@ require_once __DIR__ . '/common/CSV.class.php';
         } else {
             die("Query bin not found!");
         }
-        if ($bin_type != "track") {
-            echo '<b>Notice:</b> You have requested rate limit data for a query bin with is not of type "track". There currently is no export module for ratelimit data of another type.<br/>';
+        if ($bin_type != "track" && $bin_type != "geotrack") {
+            echo '<b>Notice:</b> You have requested rate limit data for a query bin with is not of type "track", or "geotrack". There currently is no export module for ratelimit data of other types.<br/>';
             echo '</body></html>';
             die();
         }
-        // write header
-        $header = "start,end";
-        $csv->writeheader(explode(',', $header));
+        // TODO: Support these. This shouldn't be difficult, but requires a little different logic.
+        if ($esc['date']['interval'] == "custom" || $esc['date']['interval'] == "overall") {
+            echo '<b>Notice:</b> You have selected an interval which is not yet supported by this export module.<br/>';
+            echo '</body></html>';
+            die();
+        }
 
         // make filename and open file for write
-        $module = "ratelimitData";
-        $exportSettings = array();
-        if (isset($_GET['exportSettings']) && $_GET['exportSettings'] != "")
-            $exportSettings = explode(",", $_GET['exportSettings']);
-        if ((isset($_GET['location']) && $_GET['location'] == 1))
+        if ($bin_type == "geotrack") {
             $module = "rateLimitDataGeo";
-        $filename = get_filename_for_export($module, implode("_", $exportSettings));
+        } else {
+            $module = "ratelimitData";
+        }
+        $module .= "-" . $esc['date']['interval'];
+        $filename = get_filename_for_export($module);
         $csv = new CSV($filename, $outputformat);
 
         // write header
-        $header = "interval,querybin,datetime,tweets ratelimited (estimate)";
+        $header = "querybin,datetime,tweets ratelimited (estimate)";
         $csv->writeheader(explode(',', $header));
 
         $sqlInterval = sqlInterval(); $sqlSubset = sqlSubset();
         $sqlGroup = " GROUP BY datepart ASC";
 
+        // Use native MySQL to create a temporary table with all dateparts. They should be identical to the dateparts we will use in the GROUP BY statement.
+        // Prepare the string mysql needs in date_add()
+        $mysqlNativeInterval = "day";       // default $interval = daily
+        switch ($esc['date']['interval']) {
+            case "hourly": { $mysqlNativeInterval = "hour"; break; }
+            case "daily": { $mysqlNativeInterval = "day"; break; }
+            case "weekly": { $mysqlNativeInterval = "week"; break; }
+            case "monthly": { $mysqlNativeInterval = "month"; break; }
+            case "yearly": { $mysqlNativeInterval = "year"; break; }
+        }
+        $query = "CREATE TEMPORARY TABLE temp_dates ( date DATETIME )";
+        mysql_query($query);
+        $query = "SET @date = '" . $esc['datetime']['startdate'] . "'";
+        mysql_query($query);
+        for (;;) {
+            $query = "INSERT INTO temp_dates SELECT @date := date_add(@date, interval 1 $mysqlNativeInterval)";
+            mysql_query($query);
+            print_r($query);
+            // Are we finished?
+            $query = "SELECT @date > '" . $esc['datetime']['enddate']  . "' as finished";
+            $rec = mysql_query($query);
+            if ($res = mysql_fetch_assoc($rec)) {
+                if ($res['finished'] == '1') {
+                    break;
+                }
+            }
+        }
+        $dateparts = array();
+        $sqlIntervalForDateparts = str_replace("t.created_at", "date", $sqlInterval);
+        $query = "SELECT $sqlIntervalForDateparts FROM temp_dates";
+        $rec = mysql_query($query);
+        while ($res = mysql_fetch_assoc($rec)) {
+            $dateparts[] = $res['datepart'];
+        }
+
         /*
-         *                                                      measured phrase matches for bin     (C)
-         * Formula for estimates =  (A) ratelimited_in_period * --------------------------------
-         *                                                      total unique tweets with matches    (B)
+         *                                            measured phrase matches for bin     (C)
+         * Formula for estimates =  (A) ratelimited * --------------------------------
+         *                                            total unique tweets with matches    (B)
          */
 
         $sqlIntervalForRL = str_replace("t.created_at", "start", $sqlInterval);
@@ -81,14 +119,8 @@ require_once __DIR__ . '/common/CSV.class.php';
         // This query retrieves the total unique tweets captured, grouped by the requested interval (hourly, daily, ...)
         $sql_query_b = "SELECT COUNT(distinct(t.tweet_id)) AS cnt, $sqlInterval FROM tcat_captured_phrases t $sqlSubset $sqlGroup";
 
-        // Notice: we do need to do a INNER JOIN on the querybin table here (to match phrase_id to querybin_id), but I'm assuming this is not expensive now because that table is tiny?
+        // Notice: we need to do a INNER JOIN on the querybin table here (to match phrase_id to querybin_id)
         $sql_query_c = "SELECT COUNT(distinct(t.tweet_id)) AS cnt, $sqlInterval FROM tcat_captured_phrases t INNER JOIN tcat_query_bins_phrases qbp ON t.phrase_id = qbp.phrase_id $sqlSubset AND qbp.querybin_id = $bin_id $sqlGroup";
-
-/*
-        echo "Query A:"; echo "<pre>"; print_r($sql_query_a); echo "</pre><br>";
-        echo "Query B:"; echo "<pre>"; print_r($sql_query_b); echo "</pre><br>";
-        echo "Query C:"; echo "<pre>"; print_r($sql_query_c); echo "</pre><br>";
-*/
 
         $fullresults = array();
 
@@ -122,18 +154,32 @@ require_once __DIR__ . '/common/CSV.class.php';
             $fullresults[$res['datepart']]['measuredbin'] = $res['cnt'];
         }
 
-        foreach ($fullresults as $datepart => $row) {
-            if (!array_key_exists('ratelimited', $row) || !array_key_exists('measuredbin', $row) || !array_key_exists('totalphrases', $row)) continue;
+        foreach ($dateparts as $datepart) {
 
-            // Now: calculate the estimate using our formula
-            $estimate = round( $row['ratelimited'] * $row['measuredbin'] / $row['totalphrases'] );
+            if (!array_key_exists($datepart, $fullresults)) {
+                $csv->newrow();
+                $csv->addfield($esc['mysql']['dataset']);
+                $csv->addfield($datepart);
+                $csv->addfield(-1);                         // report a minus 1 for a datepart with missing ratelimit information
+                $csv->writerow();
+            } else {
 
-            $csv->newrow();
-            $csv->addfield($interval);
-            $csv->addfield($esc['mysql']['dataset']);
-            $csv->addfield($datepart);
-            $csv->addfield($estimate);
-            $csv->writerow();
+                $row = $fullresults[$datepart];
+                if (!array_key_exists('ratelimited', $row) || !array_key_exists('measuredbin', $row) || !array_key_exists('totalphrases', $row)) {
+                    // TODO/TEST: this cannot occur I think
+                    continue;
+                }
+
+                // Now: calculate the estimate using our formula
+                $estimate = round( $row['ratelimited'] * $row['measuredbin'] / $row['totalphrases'], 2 );
+
+                $csv->newrow();
+                $csv->addfield($esc['mysql']['dataset']);
+                $csv->addfield($datepart);
+                $csv->addfield($estimate);
+                $csv->writerow();
+            }
+
         }
 
         $csv->close();

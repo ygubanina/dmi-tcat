@@ -92,6 +92,19 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
     // These values are ONLY tracked when doing a dry run; do not use them for CLI feedback.
     $suggested = false; $required = false;
 
+    // Check if we have the tcat_status table.
+    // Do not create it on-the-fly here. We want this done on the capture side.
+
+    $query = "SHOW TABLES LIKE 'tcat_status'";
+    $rec = $dbh->prepare($query);
+    $rec->execute();
+    $results = $rec->fetchAll(PDO::FETCH_COLUMN);
+    if (count($results)) {
+        $have_tcat_status = true;
+    } else {
+        $have_tcat_status = false;
+    }
+
     // 29/08/2014 Alter tweets tables to add new fields, ex. 'possibly_sensitive'
     
     $query = "SHOW TABLES";
@@ -594,34 +607,48 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
 
     $now = null;        // this variable will store the moment the new gauge behaviour became effective
 
-    $sql = "select value, unix_timestamp(value) as value_unix from tcat_status where variable = 'ratelimit_format_modified_at'";
-    $rec = $dbh->prepare($sql);
-    if ($rec->execute() && $rec->rowCount() > 0) {
-        while ($res = $rec->fetch()) {
-            $now = $res['value'];
-            $now_unix = $res['value_unix'];
-        }
-    }
+    if ($have_tcat_status) {
 
-    $sql = "select value from tcat_status where variable = 'ratelimit_database_rebuild' and value > 0";
-    $rec = $dbh->prepare($sql);
-    if (!$rec->execute() || $rec->rowCount() == 0) {
-        $already_updated = false;
-    }
-    
-    $bin_mysqldump = $bin_gzip = null;
+        $sql = "select value, unix_timestamp(value) as value_unix from tcat_status where variable = 'ratelimit_format_modified_at'";
+        $rec = $dbh->prepare($sql);
+        if ($rec->execute() && $rec->rowCount() > 0) {
+            while ($res = $rec->fetch()) {
+                $now = $res['value'];
+                $now_unix = $res['value_unix'];
+            }
+        }
 
-    if ($already_updated == false) {
-        $bin_mysqldump = get_executable("mysqldump");
-        if ($bin_mysqldump === null) {
-            logit($logtarget, "The mysqldump binary appears to be missing. Did you install the MySQL client utilities? Some upgrades will not work without this utility.");
-            $already_updated = true;
+        $sql = "select value from tcat_status where variable = 'ratelimit_database_rebuild' and value > 0";
+        $rec = $dbh->prepare($sql);
+        if (!$rec->execute() || $rec->rowCount() == 0) {
+            $already_updated = false;
         }
-        $bin_gzip = get_executable("gzip");
-        if ($bin_gzip === null) {
-            logit($logtarget, "The gzip binary appears to be missing. Please lookup this utility in your software repository. Some upgrades will not work without this utility.");
-            $already_updated = true;
+        
+        $bin_mysqldump = $bin_gzip = null;
+
+        if ($already_updated == false) {
+            $bin_mysqldump = get_executable("mysqldump");
+            if ($bin_mysqldump === null) {
+                logit($logtarget, "The mysqldump binary appears to be missing. Did you install the MySQL client utilities? Some upgrades will not work without this utility.");
+                $already_updated = true;
+            }
+            $bin_gzip = get_executable("gzip");
+            if ($bin_gzip === null) {
+                logit($logtarget, "The gzip binary appears to be missing. Please lookup this utility in your software repository. Some upgrades will not work without this utility.");
+                $already_updated = true;
+            }
         }
+
+    } else {
+     
+        // The upgrade script will cause active tracking roles to restart; which may take up to a minute. Afterwards, we can expect the tcat_status table to exist and
+        // to have started recording ratelimit information in the new gauge style. Because it really neccessary to wait for the tracking roles to behave correctly,
+        // we decide to skip this upgrade step and inform the user.
+           
+        logit($logtarget, "Your tracking roles are being restarted now (in the background) to record ratelimit and gap information in a newer style.");
+        logit($logtarget, "Afterwards will we be able to re-assemble historical ratelimit and gap information, and some now export modules can become available.");
+        logit($logtarget, "Please wait at least one minute and then run this script again.");
+
     }
 
     if (!$already_updated && $now != null) {
@@ -645,7 +672,7 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                 putenv('MYSQL_PWD=' . $dbpass);     /* this avoids having to put the password on the command-line */
 
                 $ts = time();
-                logit($logtarget, "Backuping existing tcat_error_ratelimit and tcat_error_gap information to your systems temporary directory.");
+                logit($logtarget, "Backuping existing tcat_error_ratelimit and tcat_error_gap information to your system's temporary directory.");
                 $targetfile = sys_get_temp_dir() . "/tcat_error_ratelimit_and_gap_$ts.sql";
                 if (!file_exists($targetfile)) {
                     $cmd = "$bin_mysqldump --default-character-set=utf8mb4 -u$dbuser -h $hostname $database tcat_error_ratelimit tcat_error_gap > " . $targetfile;
@@ -690,8 +717,10 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                         $difference_minutes = round(($now_unix / 60 - $beginning_unix / 60) + 1);
                     }
                     logit($logtarget, "We have ratelimit information on this server for the past $difference_minutes minutes.");
+                    logit($logtarget, "Reconstructing the rate limit for these now.");
 
-                    // If we have an end before a start time, we are sure we cannot trust any minute measurements before this occurance
+                    // If we have an end before a start time, we are sure we cannot trust any minute measurements before this occurence.
+                    // This situation (end < start) was related to a bug in the toDateTime() function, which formatted the minute-part wrong.
 
                     $sql = "select max(start) as time_fixed_dateformat, unix_timestamp(max(start)) as timestamp_fixed_dateformat from tcat_error_ratelimit where end < start";
                     $rec = $dbh->prepare($sql);
@@ -725,7 +754,7 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                         $time_fixed_dateformat = $ratelimit_time_fixed_dateformat;
                         $timestamp_fixed_dateformat = $ratelimit_timestamp_fixed_dateformat;
                     } else {
-                        // Compare table informmation
+                        // Compare table information
                         if ($gap_timestamp_fixed_dateformat > $ratelimit_timestamp_fixed_dateformat) {
                             logit($logtarget, "Dateformat fix learned from tcat_error_gap");
                             $time_fixed_dateformat = $gap_time_fixed_dateformat;
@@ -741,11 +770,9 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
 
                     logit($logtarget, "Processing everything before MySQL date $now");
 
-                    // Zero all minutes for the past 2.5 years maximally, or until the beginning of our capture era, for roles track and follow
+                    // Zero all minutes until the beginning of our capture era, for roles track and follow
 
-                    $max_minutes = min(1314000, $difference_minutes);
-
-                    for ($i = 1; $i <= $max_minutes; $i++) {
+                    for ($i = 1; $i <= $difference_minutes; $i++) {
                         $sql = "insert into tcat_error_ratelimit_upgrade ( id, `type`, `start`, `end`, `tweets` ) values ( $i, 'track',
                                             date_sub( date_sub('$now', interval $i minute), interval second(date_sub('$now', interval $i minute)) second ),
                                             date_sub( date_sub('$now', interval " . ($i - 1) . " minute), interval second(date_sub('$now', interval " . ($i - 1) . " minute)) second ),
@@ -758,8 +785,8 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                                             0 )";
                         $rec = $dbh->prepare($sql);
                         $rec->execute();
-                        if ($i % ($max_minutes/100) == 0) {
-                            logit($logtarget, "Creating temporary table " . round($i/$max_minutes * 100)  . "% completed");
+                        if ($i % ($difference_minutes/100) == 0) {
+                            logit($logtarget, "Creating temporary table " . round($i/$difference_minutes * 100)  . "% completed");
                         } 
                     }
 
@@ -977,8 +1004,8 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                             }
                             if ($max_end) {
                                 // Example: '2016-04-19 03:12:44'
-                                if (preg_match("/^([0-9][0-9][0-9][0-9])\-([0-9][0-9])\-([0-9][0-9]) ([0-9][0-9]):([0-9][0-9]):([0-9][0-9])$/", $max_end, $matches_end) &&
-                                    preg_match("/^([0-9][0-9][0-9][0-9])\-([0-9][0-9])\-([0-9][0-9]) ([0-9][0-9]):([0-9][0-9]):([0-9][0-9])$/", $row['start'], $matches_start)) {
+                                if (preg_match("/^(\d{4}-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/", $max_end, $matches_end) &&
+                                    preg_match("/^(\d{4}-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/", $row['start'], $matches_start)) {
 
                                     if (!$trust_minute_measurement) {
 
@@ -1110,6 +1137,7 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                     logit($logtarget, "Rebuilding of tcat_error_gap has finished");
 
                     // For ratelimit exports to function, we want to have the tcat_captured_phrases table
+                    // As we have not recorded this (yet), we need to reconstruct it from the previous phrases and detect which tweets contain which queries.
                     logit($logtarget, "Creating the tcat_captured_phrases table");
 
                     create_admin();
@@ -1402,7 +1430,7 @@ function reduce_gap_size($type, $start, $end) {
             }
         }
         if ($gap_size) {
-            if (preg_match("/^([0-9]*):([0-9]*):([0-9]*)$/", $gap_size, $matches)) {
+            if (preg_match("/^(\d{2}):(\d{2}):(\d{2})$/", $gap_size, $matches)) {
                 $hours = intval($matches[1]); $minutes = intval($matches[2]); $seconds = intval($matches[3]);
                 $gap_in_seconds = $seconds + $minutes * 60 + $hours * 3600;
                 if (!defined('IDLETIME')) {

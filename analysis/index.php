@@ -724,9 +724,16 @@ foreach ($linedata as $key => $value) {
                     <div class="txt_desc">Use: get a grasp of the most popular media.</div>
                     <div class="txt_link"> &raquo;  <a href="" onclick="var minf = askFrequency(); $('#whattodo').val('media_frequency&minf='+minf+getInterval());sendUrl('mod.media_frequency.php');return false;">launch</a></div>
 
+                    <?php if ($show_ratelimit_and_gap_export) { ?>
+                    <hr/>
+
+                    <h3>Export an estimation of the number of rate limited tweets in your data</h3>
+                    <div class="txt_desc">Exports a spreadsheet with an estimation of the ammount of non-captured tweets in your query due to ratelimit occurances.</div>
+                    <div class="txt_desc">Use: gain insight in possible missing data due to hitting the Twitter API rate limits.</div>
+                    <div class="txt_link"> &raquo; <a href="" onclick="$('#whattodo').val('ratelimits'+getInterval());sendUrl('mod.ratelimits.php');return false;">launch</a></div>
+                    <?php } ?>
 
                 </div>
-
 
                 <h2>Tweet exports</h2>
 
@@ -821,8 +828,8 @@ foreach ($linedata as $key => $value) {
 
                     <hr />
 
-                    <h3>Export table with potential holes in your data</h3>
-                    <div class="txt_desc">Exports a spreadsheet with all known data holes in your current query, during which TCAT was not running or capturing.</div>
+                    <h3>Export table with potential gaps in your data</h3>
+                    <div class="txt_desc">Exports a spreadsheet with all known data gaps in your current query, during which TCAT was not running or capturing data for this bin.</div>
                     <div class="txt_desc">Use: Gain insight in possible missing data due to outages</div>
                     <div class="txt_link"> &raquo; <a href="" onclick="$('#whattodo').val('gaps');sendUrl('mod.gaps.php');return false;">launch</a></div>
 
@@ -943,18 +950,6 @@ foreach ($linedata as $key => $value) {
                     <div class="txt_desc">Produces an associational profile as well as a time-encoded co-hashtag network.</div>
                     <div class="txt_desc">Use: explore shifts in hashtags associations.</div>
                     <div class="txt_link"> &raquo; <a href="" onclick="$('#whattodo').val('hashtag_variability');sendUrl('mod.hashtag_variability.php');return false;">launch</a></div>
-
-                    <?php if ($show_ratelimit_and_gap_export) { ?>
-
-                    <hr/>
-
-                    <h3>Export an estimation of the number of rate limited tweets in your data (<i>untrusted, work-in-progress code</i>)</h3>
-                    <div class="txt_desc">Exports a spreadsheet with an estimation of the ammount of non-captured tweets in your query due to ratelimit occurances.</div>
-                    <div class="txt_desc">Use: Gain insight in possible missing data due to excessive querying</div>
-                    <div class="txt_link"> &raquo; <a href="" onclick="$('#whattodo').val('ratelimits'+getInterval());sendUrl('mod.ratelimits.php');return false;">launch</a></div>
-
-                    <?php } ?>
-
 
                     <?php if (isset($_GET['dataset']) && $_GET['dataset'] == "privacy") { ?>
                         <hr />
