@@ -1878,9 +1878,7 @@ class UrlCollection implements IteratorAggregate {
 // It inserts this data into the MySQL database using a multi-insert statement
 function insert_captured_phrase_ids($captured_phrase_ids) {
     global $dbuser, $dbpass, $database, $hostname;
-    global $have_table_tcat_captured_phrases;
     if (empty($captured_phrase_ids)) return;
-    if (!isset($have_table_tcat_captured_phrases) || $have_table_tcat_captured_phrases === FALSE) return;
     $dbh = pdo_connect();
 
     // construct insert SQL
@@ -1928,18 +1926,9 @@ function tracker_run() {
        
     create_error_logs();
 
-    // Register (globally) whether we have a tcat_captured_phrases table
+    // We need the tcat_captured_phrases table
 
-    global $have_table_tcat_captured_phrases;
-    $dbh = pdo_connect();
-    $sql = "SELECT * FROM information_schema.tables WHERE table_schema = '$database' AND table_name = 'tcat_capture_phrases'";
-    $test = $dbh->prepare($sql);
-    $test->execute();
-    $have_table_tcat_captured_phrases = true;
-    if ($test->rowCount() == 0) {
-        $have_table_tcat_captured_phrases = false;
-    }
-    $dbh = false;
+    create_admin();
 
     if (!defined("CAPTURE")) {
 
