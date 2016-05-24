@@ -771,8 +771,9 @@ function getBins() {
 }
 
 function getLastRateLimitHit() {
+    // For now, we report only about rate limit hits from the last 48 hours on the analysis panel (issue #83)
     $dbh = pdo_connect();
-    $rec = $dbh->prepare("SELECT end FROM tcat_error_ratelimit ORDER BY end DESC LIMIT 1");
+    $rec = $dbh->prepare("SELECT end FROM tcat_error_ratelimit WHERE end > date_sub(now(), interval 2 day) ORDER BY end DESC LIMIT 1");
     if ($rec->execute() && $rec->rowCount() > 0) {
         $res = $rec->fetch();
         return $res['end'];
