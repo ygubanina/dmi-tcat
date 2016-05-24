@@ -646,7 +646,7 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
         // we decide to skip this upgrade step and inform the user.
            
         logit($logtarget, "Your tracking roles are being restarted now (in the background) to record ratelimit and gap information in a newer style.");
-        logit($logtarget, "Afterwards will we be able to re-assemble historical ratelimit and gap information, and some now export modules can become available.");
+        logit($logtarget, "Afterwards will we be able to re-assemble historical ratelimit and gap information, and new export modules can become available.");
         logit($logtarget, "Please wait at least one minute and then run this script again.");
 
     }

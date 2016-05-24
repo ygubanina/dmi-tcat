@@ -70,8 +70,8 @@ function create_error_logs() {
     `variable` varchar(32),
     `value` varchar(1024),
     PRIMARY KEY `variable` (`variable`),
-            KEY `value` (`value`),
-    ) ENGINE = MyISAM DEFAULT CHARSET = utf8mb4";
+            KEY `value` (`value`)
+    ) ENGINE=MyISAM DEFAULT CHARSET=utf8mb4";
     $create = $dbh->prepare($sql);
     $create->execute();
 
@@ -515,7 +515,6 @@ function gap_record($role, $ustart, $uend) {
 
 function ratelimit_report_problem() {
     if (defined('RATELIMIT_MAIL_HOURS') && RATELIMIT_MAIL_HOURS > 0) {
-        create_error_logs();    /* we need the tcat_status table */
         $sql = "select count(*) as cnt from tcat_status where variable = 'email_ratelimit' and value > (now() - interval " . RATELIMIT_MAIL_HOURS . " hour);";
         $result = mysql_query($sql);
         if ($row = mysql_fetch_assoc($result)) {
@@ -1890,7 +1889,7 @@ function insert_captured_phrase_ids($captured_phrase_ids) {
     if (count($captured_phrase_ids) > 3) {
         $moresets = count($captured_phrase_ids) / 3 - 1;
     }
-    $sql = "INSERT DELAYED " . (DISABLE_INSERT_IGNORE ? "" : 'IGNORE') . " INTO tcat_captured_phrases ( tweet_id, phrase_id, created_at ) VALUES ( ?, ?, ? )" . str_repeat(", (?, ?, ?)", $moresets);
+    $sql = "INSERT DELAYED IGNORE INTO tcat_captured_phrases ( tweet_id, phrase_id, created_at ) VALUES ( ?, ?, ? )" . str_repeat(", (?, ?, ?)", $moresets);
     $h = $dbh->prepare($sql);
     for ($i = 0; $i < count($captured_phrase_ids); $i++) {
         // bindParam() expects its first parameter ( index of the ? placeholder ) to start with 1
@@ -1925,6 +1924,10 @@ function tracker_run() {
         $tweetQueue->setoption('ignore', true);
     }
 
+    // We need the tcat_status table
+       
+    create_error_logs();
+
     // Register (globally) whether we have a tcat_captured_phrases table
 
     global $have_table_tcat_captured_phrases;
@@ -1932,9 +1935,9 @@ function tracker_run() {
     $sql = "SELECT * FROM information_schema.tables WHERE table_schema = '$database' AND table_name = 'tcat_capture_phrases'";
     $test = $dbh->prepare($sql);
     $test->execute();
-    $have_table_tcat_captured_phrases = false;
+    $have_table_tcat_captured_phrases = true;
     if ($test->rowCount() == 0) {
-        $have_table_tcat_captured_phrases = true;
+        $have_table_tcat_captured_phrases = false;
     }
     $dbh = false;
 
