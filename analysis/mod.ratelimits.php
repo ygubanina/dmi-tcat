@@ -48,6 +48,23 @@ require_once __DIR__ . '/common/CSV.class.php';
             echo '</body></html>';
             die();
         }
+        if ($bin_type == "geotrack") {
+            // Lookup the earliest entry in the tcat_captured_phrases table for any geotrack bin. Geotrack bins historic rate limit is not reconstructed,
+            // therefore we decide to not allow this export function for earlier timeframes.
+            $accept = false;
+            $sql = "select min(created_at) as earliest from tcat_captured_phrases tcp inner join tcat_query_bins_phrases bp on tcp.phrase_id=bp.phrase_id inner join tcat_query_bins tqb on bp.querybin_id = tqb.id where tqb.type = 'geotrack' and earliest > " . $esc['datetime']['startdate'];
+            $sqlresults2 = mysql_query($sql);
+            if ($res2 = mysql_fetch_assoc($sqlresults)) {
+                if (array_key_exists('earliest', $res2) && is_string($res2['earliest'])) {
+                    $accept = true;
+                }
+            }
+            if ($accept == false) {
+                echo '<b>Notice:</b> You have requested rate limit data for a query bin which is of type "geotrack", but for a time period for which we posses no historical data. We cannot handle your request.<br/>';
+                echo '</body></html>';
+                die();
+            }
+        }
         // TODO: Support these. This shouldn't be difficult, but requires a little different logic.
         if ($esc['date']['interval'] == "custom" || $esc['date']['interval'] == "overall") {
             echo '<b>Notice:</b> You have selected an interval which is not yet supported by this export module.<br/>';
