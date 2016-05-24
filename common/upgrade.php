@@ -1004,8 +1004,8 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                             }
                             if ($max_end) {
                                 // Example: '2016-04-19 03:12:44'
-                                if (preg_match("/^(\d{4}-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/", $max_end, $matches_end) &&
-                                    preg_match("/^(\d{4}-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/", $row['start'], $matches_start)) {
+                                if (preg_match("/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/", $max_end, $matches_end) &&
+                                    preg_match("/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/", $row['start'], $matches_start)) {
 
                                     if (!$trust_minute_measurement) {
 
