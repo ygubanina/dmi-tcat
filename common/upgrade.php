@@ -930,10 +930,14 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                      * Second part: gaps
                      *
                      * Notice we do all datetime functions in native MySQL. This may appear to be cumbersome but is has the advantage of having to do a minimal ammount of datetime conversions,
-                     * and being able to ignore the system clock (OS). The gap table is not big and this upgrade step should maximally take several hours on long-running servers.
+                     * and being able to mostly ignore the system clock (OS), with the single exception of the reduce_gap_size() function.
+                     * The gap table is not big and this upgrade step should maximally take several hours on long-running servers.
                      */
 
                     logit($logtarget, "Now rebuilding tcat_error_gap table");
+
+                    // We need functioning timezone tables for this upgrade step
+                    mysql_tzinfo_to_sql();
 
                     $existing_roles = array ( 'track', 'follow', 'onepercent' );
                     foreach ($existing_roles as $type) {
