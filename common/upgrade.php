@@ -689,6 +689,13 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                     system($cmd);
                     logit($logtarget, "Backup placed here - you may want to store it somewhere else: " . $targetfile . '.gz');
 
+
+                    // We tell MySQL we want to work within the same timezone as the PHP timezone defined in config.php.
+                    // An issue described here (https://github.com/digitalmethodsinitiative/dmi-tcat/issues/197) which awaits a generalized solution
+                    // This affects our statements with NOW()
+                    $rec = $dbh->prepare("SET time_zone='" . date_default_timezone_get() . "'");
+                    $rec->execute();
+
                     /*
                      * First part: rate limits
                      */
@@ -1453,9 +1460,10 @@ function reduce_gap_size($type, $start, $end) {
             continue;
         }
 
-        // Account for the fact that created_at is in UTC timezone, while gaps start and end are in the system timezone (which may differ)
-        $sql = "insert ignore into gap_searcher select convert_tz(created_at, 'UTC', 'SYSTEM') from $bin" . "_tweets
-                       where convert_tz(created_at, 'UTC', 'SYSTEM') > '$start' and convert_tz(created_at, 'UTC', 'SYSTEM') < '$end'";
+        // This SQL query performs an explicit cast to handle the problems with created_at and timezones described here https://github.com/digitalmethodsinitiative/dmi-tcat/issues/197
+        // We compare it with the dates we have in the gap table, which is the date specified by config.php
+        $sql = "insert ignore into gap_searcher select convert_tz(created_at, 'UTC', '" . date_default_timezone_get() . "') from $bin" . "_tweets
+                       where convert_tz(created_at, 'UTC', '" . date_default_timezone_get() . "') > '$start' and convert_tz(created_at, 'UTC', '" . date_default_timezone_get() . "') < '$end'";
         $rec = $dbh->prepare($sql);
         $rec->execute();
     }

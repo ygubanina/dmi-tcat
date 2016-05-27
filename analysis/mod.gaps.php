@@ -28,6 +28,11 @@ require_once __DIR__ . '/common/CSV.class.php';
 
         <?php
         validate_all_variables();
+
+        // We tell MySQL we want to work within the same timezone as the PHP timezone defined in config.php.
+        // An issue described here (https://github.com/digitalmethodsinitiative/dmi-tcat/issues/197) which awaits a generalized solution
+        mysql_query("SET time_zone='" . date_default_timezone_get() . "'");
+
         // make filename and open file for write
         $module = "gapData";
         $sql = "SELECT id, `type` FROM tcat_query_bins WHERE querybin = '" . mysql_real_escape_string($esc['mysql']['dataset']) . "'";
@@ -49,14 +54,14 @@ require_once __DIR__ . '/common/CSV.class.php';
 
         // make query
         $sql = "SELECT * FROM tcat_error_gap WHERE type = '" . mysql_real_escape_string($bin_type) . "' and
-                                                   convert_tz(start, 'UTC', 'SYSTEM') >= '" . mysql_real_escape_string($_GET['startdate']) . "' and convert_tz(end, 'UTC', 'SYSTEM') <= '" . mysql_real_escape_string($_GET['enddate']) . "'";
+                                                   start >= '" . mysql_real_escape_string($_GET['startdate']) . "' and end <= '" . mysql_real_escape_string($_GET['enddate']) . "'";
         // loop over results and write to file
         $sqlresults = mysql_query($sql);
         if ($sqlresults) {
             while ($data = mysql_fetch_assoc($sqlresults)) {
                 // the query bin must have been active during the gap period, if we want to report it as a possible gap
                 $sql2 = "SELECT count(*) as cnt FROM tcat_query_bins_phrases WHERE querybin_id = $bin_id and
-                                                            convert_tz(starttime, '" . date_default_timezone_get() . "', 'SYSTEM) <= '" . $data["end"] . "' and convert_tz(endtime, '" . date_default_timezone_get() . "', 'SYSTEM)' >= '" . $data["start"] . "' or endtime is null or endtime = '0000-00-00 00:00:00')";
+                                                            starttime <= '" . $data["end"] . "' and (endtime >= '" . $data["start"] . "' or endtime is null or endtime = '0000-00-00 00:00:00')";
                 $sqlresults2 = mysql_query($sql2);
                 if ($sqlresults2) {
                     if ($data2 = mysql_fetch_assoc($sqlresults2)) {

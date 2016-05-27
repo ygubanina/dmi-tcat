@@ -28,6 +28,10 @@ require_once __DIR__ . '/common/CSV.class.php';
 
         <?php
 
+        // We tell MySQL we want to work within the same timezone as the PHP timezone defined in config.php.
+        // An issue described here (https://github.com/digitalmethodsinitiative/dmi-tcat/issues/197) which awaits a generalized solution
+        mysql_query("SET time_zone='" . date_default_timezone_get() . "'");
+
         /*
          * We want to create a realistic estimate of how many tweets where ratelimited per bin and per interval while:
          * 1) accounting for the relative distribution of tweets per bin in that particular interval (which will fluctuate); this will make the query heavy
@@ -52,7 +56,10 @@ require_once __DIR__ . '/common/CSV.class.php';
             // Lookup the earliest entry in the tcat_captured_phrases table for any geotrack bin. Geotrack bins historic rate limit is not reconstructed,
             // therefore we decide to not allow this export function for earlier timeframes.
             $accept = false;
-            $sql = "select min(created_at) as earliest from tcat_captured_phrases tcp inner join tcat_query_bins_phrases bp on tcp.phrase_id=bp.phrase_id inner join tcat_query_bins tqb on bp.querybin_id = tqb.id where tqb.type = 'geotrack' and earliest > " . $esc['datetime']['startdate'];
+            // The timezone of created_at in tcat_captured_phrases is the same as _tweets.created_at which may require an explicit cast to UTC if the config.php time wasn't set
+            // to UTC (https://github.com/digitalmethodsinitiative/dmi-tcat/issues/197).
+            // We cast it to the timezone we set in config.php
+            $sql = "select convert(min(created_at), 'UTC', '" . date_default_timezone_get() . "') as earliest from tcat_captured_phrases tcp inner join tcat_query_bins_phrases bp on tcp.phrase_id=bp.phrase_id inner join tcat_query_bins tqb on bp.querybin_id = tqb.id where tqb.type = 'geotrack' and earliest > '" . $esc['datetime']['startdate'] . "'";
             $sqlresults2 = mysql_query($sql);
             if ($res2 = mysql_fetch_assoc($sqlresults)) {
                 if (array_key_exists('earliest', $res2) && is_string($res2['earliest'])) {
@@ -129,6 +136,12 @@ require_once __DIR__ . '/common/CSV.class.php';
          * Formula for estimates =  (A) ratelimited * --------------------------------
          *                                            total unique tweets with matches    (B)
          */
+
+        // TODO: Whenever the config.php time was not set to UTC and did not match the server time, the created_at in the _tweets table may be misaligned.
+        //       See https://github.com/digitalmethodsinitiative/dmi-tcat/issues/197
+        //       While this is not specifically a rate limit related issue, it may pose an extra challange here, because we are joining with a datetime table (tcat_error_ratelimit)
+        //       which does not suffer from this problem. Currently we do not suggest a solution here.
+        //       Probably a clever invocation of convert_tz() inside $sqlInterval could help to re-align the data, here and elsewhere?
 
         $sqlIntervalForRL = str_replace("t.created_at", "start", $sqlInterval);
         $sql_query_a = "SELECT SUM(tweets) as ratelimited, $sqlIntervalForRL FROM tcat_error_ratelimit WHERE start >= '" . $esc['datetime']['startdate'] . "' AND end <= '" . $esc['datetime']['enddate'] . "' $sqlGroup";
