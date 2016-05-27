@@ -1449,8 +1449,9 @@ function reduce_gap_size($type, $start, $end) {
             continue;
         }
 
-        $sql = "insert ignore into gap_searcher select created_at from $bin" . "_tweets
-                       where created_at > '$start' and created_at < '$end'";
+        // Account for the fact that created_at is in UTC timezone, while gaps start and end are in the system timezone (which may differ)
+        $sql = "insert ignore into gap_searcher select convert_tz(created_at, 'UTC', 'SYSTEM') from $bin" . "_tweets
+                       where convert_tz(created_at, 'UTC', 'SYSTEM') > '$start' and convert_tz(created_at, 'UTC', 'SYSTEM') < '$end'";
         $rec = $dbh->prepare($sql);
         $rec->execute();
     }
