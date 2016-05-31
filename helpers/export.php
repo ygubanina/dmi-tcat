@@ -307,7 +307,7 @@ fputs($fh, "--\n");
 fputs($fh, "-- DMI-TCAT - Update TCAT tables\n");
 fputs($fh, "--\n");
 
-$sql = "INSERT INTO tcat_query_bins ( querybin, `type`, active, visible ) values ( " . $dbh->Quote($bin) . ", " . $dbh->Quote($bintype) . ", 0, 1 );";
+$sql = "INSERT INTO tcat_query_bins ( querybin, `type`, active, access ) values ( " . $dbh->Quote($bin) . ", " . $dbh->Quote($bintype) . ", 0, 0 );";
 fputs($fh, $sql . "\n");
 
 if ($bintype == 'track') {

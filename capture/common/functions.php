@@ -1,5 +1,14 @@
 <?php
 
+/* Required constants for tcat_query_bins.access (TODO: move to common/constants.php?) */
+
+if (!defined('TCAT_QUERYBIN_ACCESS_OK')) {
+    define('TCAT_QUERYBIN_ACCESS_OK', 0);
+    define('TCAT_QUERYBIN_ACCESS_READONLY', 1);
+    define('TCAT_QUERYBIN_ACCESS_WRITEONLY', 2);
+    define('TCAT_QUERYBIN_ACCESS_INVISIBLE', 3);
+}
+
 require_once __DIR__ . '/geoPHP/geoPHP.inc'; // geoPHP library
 
 error_reporting(E_ALL);
@@ -331,7 +340,7 @@ function create_admin() {
     `querybin` VARCHAR(45) NOT NULL,
     `type` VARCHAR(10) NOT NULL,
     `active` BOOLEAN NOT NULL,
-    `visible` BOOLEAN DEFAULT TRUE,
+    `access` INT DEFAULT 0,
     `comments` VARCHAR(2048) DEFAULT NULL,
     PRIMARY KEY (`id`),
     KEY `querybin` (`querybin`),
@@ -429,6 +438,36 @@ function create_admin() {
         $rec->execute();
     }
 
+    // 31/05/2016 Add access column, remove visibility column [fast auto-upgrade - reminder to remove]
+    $query = "SHOW COLUMNS FROM tcat_query_bins";
+    $rec = $dbh->prepare($query);
+    $rec->execute();
+    $columns = $rec->fetchAll(PDO::FETCH_COLUMN);
+    $update = FALSE;
+    foreach ($columns as $i => $c) {
+        if ($c == 'visible') {
+            $update = TRUE;
+            break;
+        }
+    }
+    if ($update) {
+        // Adding new columns to table tcat_query_bins
+        $query = "ALTER TABLE tcat_query_bins ADD COLUMN `access` INT DEFAULT 0";
+        $rec = $dbh->prepare($query);
+        $rec->execute();
+        $query = "UPDATE tcat_query_bins SET access = " . TCAT_QUERYBIN_ACCESS_OK . " where visible = TRUE";
+        $rec = $dbh->prepare($query);
+        $rec->execute();
+        $query = "UPDATE tcat_query_bins SET access = " . TCAT_QUERYBIN_ACCESS_INVISIBLE . " where visible = FALSE";
+        $rec = $dbh->prepare($query);
+        $rec->execute();
+        $query = "ALTER TABLE tcat_query_bins DROP COLUMN `visible`";
+        $rec = $dbh->prepare($query);
+        $rec->execute();
+
+    }
+
+
     // 05/05/2016 Create a global lookup table to matching phrases to tweets
     // Thanks to this table we know how many (unique or non-unique) tweets were the result of querying the phrase.
     // This is used to estimate in (analysis/mod.ratelimits.php) how many tweets may have been ratelimited for bins associated with the phrase
@@ -474,7 +513,6 @@ function ratelimit_holefiller($minutes) {
         $sql = "select count(*) as cnt from tcat_error_ratelimit where type = '" . CAPTURE . "' and 
                         start >= date_sub(date_sub(date_sub(now(), interval $i minute), interval second(date_sub(now(), interval $i minute)) second), interval 1 minute) and
                         end <= date_sub(date_sub(now(), interval " . ($i - 1) . " minute), interval second(date_sub(now(), interval " . ($i - 1) . " minute)) second)";
-        logit(CAPTURE . ".error.log", "$sql");
         $h = $dbh->prepare($sql);
         $h->execute();
         while ($res = $h->fetch()) {
@@ -740,7 +778,8 @@ function getActivePhrases() {
     $dbh = pdo_connect();
     $sql = "SELECT DISTINCT(p.phrase) FROM tcat_query_phrases p, tcat_query_bins_phrases bp, tcat_query_bins b
                                       WHERE bp.endtime = '0000-00-00 00:00:00' AND p.id = bp.phrase_id
-                                            AND bp.querybin_id = b.id AND b.type != 'geotrack' AND b.active = 1";
+                                            AND bp.querybin_id = b.id AND b.type != 'geotrack' AND b.active = 1
+                                            AND ( b.access = " . TCAT_QUERYBIN_ACCESS_OK . " or b.access = " . TCAT_QUERYBIN_ACCESS_WRITEONLY . " or b.access = " . TCAT_QUERYBIN_ACCESS_INVISIBLE . ")";
     $rec = $dbh->prepare($sql);
     $rec->execute();
     $results = $rec->fetchAll(PDO::FETCH_COLUMN);
@@ -784,7 +823,7 @@ function getBinType($binname, $dbh = null) {
 
 function geobinsActive() {
     $dbh = pdo_connect();
-    $sql = "SELECT COUNT(*) AS cnt FROM tcat_query_bins WHERE `type` = 'geotrack' and active = 1";
+    $sql = "SELECT COUNT(*) AS cnt FROM tcat_query_bins WHERE `type` = 'geotrack' and active = 1 and ( access = " . TCAT_QUERYBIN_ACCESS_OK . " or access = " . TCAT_QUERYBIN_ACCESS_WRITEONLY . " or access = " . TCAT_QUERYBIN_ACCESS_INVISIBLE . " )";
     $rec = $dbh->prepare($sql);
     $rec->execute();
     $results = $rec->fetchAll(PDO::FETCH_COLUMN);
@@ -821,7 +860,8 @@ function getActiveLocationsImploded() {
     $dbh = pdo_connect();
     $sql = "SELECT phrase FROM tcat_query_phrases p, tcat_query_bins_phrases bp, tcat_query_bins b
                                       WHERE bp.endtime = '0000-00-00 00:00:00' AND p.id = bp.phrase_id
-                                            AND bp.querybin_id = b.id AND b.type = 'geotrack' AND b.active = 1";
+                                            AND bp.querybin_id = b.id AND b.type = 'geotrack' AND b.active = 1
+                                            AND ( b.access = " . TCAT_QUERYBIN_ACCESS_OK . " or b.access = " . TCAT_QUERYBIN_ACCESS_WRITEONLY . " or b.access = " . TCAT_QUERYBIN_ACCESS_INVISIBLE . ")";
     $rec = $dbh->prepare($sql);
     $rec->execute();
     $results = $rec->fetchAll(PDO::FETCH_COLUMN);
@@ -887,7 +927,7 @@ function getActiveUsers() {
 
 function getActiveTrackBins() {
     $dbh = pdo_connect();
-    $sql = "SELECT b.querybin, p.phrase FROM tcat_query_bins b, tcat_query_phrases p, tcat_query_bins_phrases bp WHERE b.active = 1 AND bp.querybin_id = b.id AND bp.phrase_id = p.id AND bp.endtime = '0000-00-00 00:00:00'";
+    $sql = "SELECT b.querybin, p.phrase FROM tcat_query_bins b, tcat_query_phrases p, tcat_query_bins_phrases bp WHERE b.active = 1 AND bp.querybin_id = b.id AND bp.phrase_id = p.id AND bp.endtime = '0000-00-00 00:00:00' and ( b.access = " . TCAT_QUERYBIN_ACCESS_OK . " or b.access = " . TCAT_QUERYBIN_ACCESS_WRITEONLY . " or b.access = " . TCAT_QUERYBIN_ACCESS_INVISIBLE . " )";
     $rec = $dbh->prepare($sql);
     $querybins = array();
     if ($rec->execute() && $rec->rowCount() > 0) {
@@ -899,11 +939,11 @@ function getActiveTrackBins() {
     return $querybins;
 }
 
-// This function returns a phrase_string:phrase_id associative array
+// This function returns a phrase_string:phrase_id associative array.
 
 function getActivePhraseIds() {
     $dbh = pdo_connect();
-    $sql = "SELECT p.phrase as phrase, p.id as id FROM tcat_query_bins b, tcat_query_phrases p, tcat_query_bins_phrases bp WHERE b.active = 1 AND bp.querybin_id = b.id AND bp.phrase_id = p.id AND bp.endtime = '0000-00-00 00:00:00'";
+    $sql = "SELECT p.phrase as phrase, p.id as id FROM tcat_query_bins b, tcat_query_phrases p, tcat_query_bins_phrases bp WHERE b.active = 1 AND bp.querybin_id = b.id AND bp.phrase_id = p.id AND bp.endtime = '0000-00-00 00:00:00' and ( b.access = " . TCAT_QUERYBIN_ACCESS_OK . " or b.access = " . TCAT_QUERYBIN_ACCESS_WRITEONLY . " or b.access = " . TCAT_QUERYBIN_ACCESS_INVISIBLE . " )";
     $rec = $dbh->prepare($sql);
     $phrase_ids = array();
     if ($rec->execute() && $rec->rowCount() > 0) {
@@ -917,7 +957,7 @@ function getActivePhraseIds() {
 
 function getActiveFollowBins() {
     $dbh = pdo_connect();
-    $sql = "SELECT b.querybin, u.id AS uid FROM tcat_query_bins b, tcat_query_users u, tcat_query_bins_users bu WHERE b.active = 1 AND bu.querybin_id = b.id AND bu.user_id = u.id AND bu.endtime = '0000-00-00 00:00:00'";
+    $sql = "SELECT b.querybin, u.id AS uid FROM tcat_query_bins b, tcat_query_users u, tcat_query_bins_users bu WHERE b.active = 1 AND bu.querybin_id = b.id AND bu.user_id = u.id AND bu.endtime = '0000-00-00 00:00:00' and ( b.access = " . TCAT_QUERYBIN_ACCESS_OK . " or b.access = " . TCAT_QUERYBIN_ACCESS_WRITEONLY . " or b.access = " . TCAT_QUERYBIN_ACCESS_INVISIBLE . " )";
     $rec = $dbh->prepare($sql);
     $querybins = array();
     if ($rec->execute() && $rec->rowCount() > 0) {
@@ -931,7 +971,7 @@ function getActiveFollowBins() {
 
 function getActiveOnepercentBin() {
     $dbh = pdo_connect();
-    $sql = "select querybin from tcat_query_bins where type = 'onepercent' and active = 1";
+    $sql = "select querybin from tcat_query_bins where type = 'onepercent' and active = 1 and ( access = " . TCAT_QUERYBIN_ACCESS_OK . " or access = " . TCAT_QUERYBIN_ACCESS_WRITEONLY . " or access = " . TCAT_QUERYBIN_ACCESS_INVISIBLE . " )";
     $rec = $dbh->prepare($sql);
     $querybins = array();
     if ($rec->execute() && $rec->rowCount() > 0) {
