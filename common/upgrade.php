@@ -762,7 +762,7 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                          *       Here:  https://github.com/digitalmethodsinitiative/dmi-tcat/issues/197
                          *       And here: https://github.com/digitalmethodsinitiative/dmi-tcat/pull/194
                          */
-                        $sql = "SELECT id, created_at FROM `$tweets_table` WHERE created_at < '$now' ORDER BY CONVERT_TZ(created_at, 'UTC', '$badzone') DESC LIMIT 1";
+                        $sql = "SELECT id FROM `$tweets_table` WHERE CONVERT_TZ(created_at, 'UTC', '$badzone') < '$now' ORDER BY CONVERT_TZ(created_at, 'UTC', '$badzone') DESC LIMIT 1";
                         logit($logtarget, "$sql");
                         $rec2 = $dbh->prepare($sql);
                         $rec2->execute();
@@ -824,11 +824,23 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                         system($cmd);
                         logit($logtarget, "Backup placed here - you may want to store it somewhere else: " . $targetfile . '.gz');
 
-                        // We tell MySQL we want to work within the same timezone as the PHP timezone defined in config.php.
-                        // An issue described here (https://github.com/digitalmethodsinitiative/dmi-tcat/issues/197) which awaits a generalized solution
-                        // This affects our statements with NOW()
-                        $rec = $dbh->prepare("SET time_zone='" . date_default_timezone_get() . "'");
-                        $rec->execute();
+                        // Fix issue described here https://github.com/digitalmethodsinitiative/dmi-tcat/issues/197
+
+                        $sql = "SELECT id FROM tcat_error_ratelimit WHERE CONVERT_TZ(end, 'UTC', '$badzone') < '$now' ORDER BY CONVERT_TZ(end, 'UTC', '$badzone') DESC LIMIT 1";
+                        logit($logtarget, "$sql");
+                        $rec2 = $dbh->prepare($sql);
+                        $rec2->execute();
+                        $results2 = $rec2->fetch(PDO::FETCH_ASSOC);
+                        $max_id = $results2['id'];
+                        if (is_null($max_id)) {
+                            $max_id = 0;        // table is empty.
+                        }
+                        $dbh->beginTransaction();
+                        $sql = "UPDATE tcat_error_ratelimit SET start = CONVERT_TZ(start, 'UTC', '$badzone'), end = CONVERT_TZ(end, 'UTC', '$badzone') WHERE id <= $max_id";
+                        logit($logtarget, "$sql");
+                        $rec2 = $dbh->prepare($sql);
+                        $rec2->execute();
+                        $dbh->commit();
 
                         /*
                          * First part: rate limits
@@ -1076,6 +1088,24 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                          */
 
                         logit($logtarget, "Now rebuilding tcat_error_gap table");
+
+                        // Fix issue described here https://github.com/digitalmethodsinitiative/dmi-tcat/issues/197
+
+                        $sql = "SELECT id FROM tcat_error_gap WHERE CONVERT_TZ(end, 'UTC', '$badzone') < '$now' ORDER BY CONVERT_TZ(end, 'UTC', '$badzone') DESC LIMIT 1";
+                        logit($logtarget, "$sql");
+                        $rec2 = $dbh->prepare($sql);
+                        $rec2->execute();
+                        $results2 = $rec2->fetch(PDO::FETCH_ASSOC);
+                        $max_id = $results2['id'];
+                        if (is_null($max_id)) {
+                            $max_id = 0;        // table is empty.
+                        }
+                        $dbh->beginTransaction();
+                        $sql = "UPDATE tcat_error_gap SET start = CONVERT_TZ(start, 'UTC', '$badzone'), end = CONVERT_TZ(end, 'UTC', '$badzone') WHERE id <= $max_id";
+                        logit($logtarget, "$sql");
+                        $rec2 = $dbh->prepare($sql);
+                        $rec2->execute();
+                        $dbh->commit();
 
                         $existing_roles = array ( 'track', 'follow', 'onepercent' );
                         foreach ($existing_roles as $type) {

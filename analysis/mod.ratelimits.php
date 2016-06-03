@@ -113,7 +113,6 @@ require_once __DIR__ . '/common/CSV.class.php';
         for (;;) {
             $query = "INSERT INTO temp_dates SELECT @date := date_add(@date, interval 1 $mysqlNativeInterval)";
             mysql_query($query);
-            print_r($query);
             // Are we finished?
             $query = "SELECT @date > '" . $esc['datetime']['enddate']  . "' as finished";
             $rec = mysql_query($query);
