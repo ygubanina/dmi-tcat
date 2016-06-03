@@ -665,12 +665,43 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                     $ans = 'SKIP';
                 }
             } else {
-                $ans = cli_yesnoall("Re-assemble historical TCAT ratelimit and gap information to keep appropriate interval records (this could take quite a while on long-running servers, but it does not block anything or interrupt your capture)", 2);
+                $ans = cli_yesnoall("Re-assemble historical TCAT tweet timezone, ratelimit and gap information to keep appropriate records. This will take quite a while on long-running servers. It does not block your capture, but will temporarily render your bins invisible in the front-end)", 2);
             }
             if ($ans == 'y' || $ans == 'a') {
                 
                 global $dbuser, $dbpass, $database, $hostname;
                 putenv('MYSQL_PWD=' . $dbpass);     /* this avoids having to put the password on the command-line */
+
+                // First make sure the historical tweet data is correct
+
+                $query = "SHOW TABLES";
+                $rec = $dbh->prepare($query);
+                $rec->execute();
+                $results = $rec->fetchAll(PDO::FETCH_COLUMN);
+                foreach ($results as $k => $tweets_table) {
+                    if (!preg_match("/_tweets$/", $tweets_table)) continue; 
+                    $badzone = 'Europe/London';
+                    logit($logtarget, "Fixing timezone for created_at field in table '$tweets_table' ..");
+                    if (TCAT_CONFIG_DEPRECATED_TIMEZONE && TCAT_CONFIG_DEPRECATED_TIMEZONE_CONFIGURED) {
+                        $badzone = TCAT_CONFIG_DEPRECATED_TIMEZONE_CONFIGURED;
+                    }
+                    $sql = "SELECT id, CONVERT_TZ(MAX(created_at), 'UTC', '$badzone') FROM `$tweets_table` WHERE created_at < ( SELECT ratelimit_format_modified_at FROM tcat_status )";
+                    logit($logtarget, "$sql");
+                    $rec2 = $dbh->prepare($sql);
+                    $rec2->execute();
+                    $results2 = $rec2->fetch(PDO::FETCH_ASSOC);
+                    $max_id = $results2['id'];
+                    if (is_null($max_id)) {
+                        logit($logtarget, "Table is either empty or does not need to be fixed. Skipping.");
+                        continue;
+                    } 
+                    $dbh->beginTransaction();
+                    $sql = "UPDATE `$tweets_table` SET created_at = CONVERT_TZ(created_at, 'UTC', '$badzone') WHERE id <= $max_id";
+                    logit($logtarget, "$sql");
+                    $dbh->commit();
+                }
+
+                // Start working on the gaps and ratelimit tables
 
                 $ts = time();
                 logit($logtarget, "Backuping existing tcat_error_ratelimit and tcat_error_gap information to your system's temporary directory.");
@@ -689,7 +720,6 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                     logit($logtarget, $cmd);
                     system($cmd);
                     logit($logtarget, "Backup placed here - you may want to store it somewhere else: " . $targetfile . '.gz');
-
 
                     // We tell MySQL we want to work within the same timezone as the PHP timezone defined in config.php.
                     // An issue described here (https://github.com/digitalmethodsinitiative/dmi-tcat/issues/197) which awaits a generalized solution
@@ -1463,8 +1493,8 @@ function reduce_gap_size($type, $start, $end) {
 
         // This SQL query performs an explicit cast to handle the problems with created_at and timezones described here https://github.com/digitalmethodsinitiative/dmi-tcat/issues/197
         // We compare it with the dates we have in the gap table, which is the date specified by config.php
-        $sql = "insert ignore into gap_searcher select convert_tz(created_at, 'UTC', '" . date_default_timezone_get() . "') from $bin" . "_tweets
-                       where convert_tz(created_at, 'UTC', '" . date_default_timezone_get() . "') > '$start' and convert_tz(created_at, 'UTC', '" . date_default_timezone_get() . "') < '$end'";
+        $sql = "insert ignore into gap_searcher select created_at from $bin" . "_tweets
+                       where created_at > '$start' and created_at < '$end'";
         $rec = $dbh->prepare($sql);
         $rec->execute();
     }
