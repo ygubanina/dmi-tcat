@@ -65,6 +65,59 @@ function cli_yesnoall($update, $time_indication = 1, $commit = null) {
     }
 }
 
+/*
+ * This function imports the MySQL timezone data neccessary to make the convert_tz() function work. On Debian/Ubuntu systems the timezone data is not
+ * loaded by default, as is evident from the result of the following query, which unexpectedly is NULL:
+ * SELECT convert_tz(now(), 'SYSTEM', 'UTC');
+ *
+ * Our function first tests (quickly) whether timezone data is available, and otherwise imports it.
+ *
+ * See also: http://stackoverflow.com/questions/9808160/mysql-time-zones
+ */
+function import_mysql_timezone_data() {
+    global $dbuser, $dbpass, $database, $hostname;
+
+    $dbh = pdo_connect();
+
+    $sql = "SELECT convert_tz(now(), 'SYSTEM', 'UTC') as available";
+    $test = $dbh->prepare($sql);
+    $test->execute();
+    if ($res = $test->fetch()) {
+        if (array_key_exists('available', $res) && is_string($res['available'])) {
+            return true;    // we already have the timezone data
+        }
+    }
+    if (!file_exists('/usr/share/zoneinfo') || !is_executable('/usr/bin/mysql_tzinfo_to_sql')) {
+        return false;       // we cannot import timezone data (unknown OS?)
+    }
+
+    // Connect to MySQL meta information database
+    try {
+        $dbh_mysql = new PDO("mysql:host=$hostname;dbname=mysql;charset=utf8mb4", $dbuser, $dbpass, array(PDO::MYSQL_ATTR_INIT_COMMAND => "set sql_mode='ALLOW_INVALID_DATES'"));
+    } catch (Exception $e) {
+        if ($e->getCode() == 1044) {
+            // Access denied (probably the connecting user does not have sufficient privileges)
+            return false;
+        }
+    }
+    $dbh_mysql->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
+    // Run the MySQL tool to convert Unix timezones into MySQL format, read its output using popen()
+    // and then execute its output as a query. We could opt for piping directly to the mysql command line tool,
+    // but this is probably a bit more secure (no need to transfer passwords to the command-line)
+    $cmdhandle = popen("/usr/bin/mysql_tzinfo_to_sql /usr/share/zoneinfo", "r");
+    $query = "";
+    while ($buf = fread($cmdhandle, 2048)) {
+        $query .= $buf;
+    }
+    pclose($cmdhandle);
+    $import = $dbh_mysql->prepare($query);
+    $import->execute();
+    return true;
+}
+
+
+
 /**
  * Check for possible upgrades to the TCAT database.
  *
@@ -672,558 +725,606 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                 global $dbuser, $dbpass, $database, $hostname;
                 putenv('MYSQL_PWD=' . $dbpass);     /* this avoids having to put the password on the command-line */
 
-                // First make sure the historical tweet data is correct
-
-                $query = "SHOW TABLES";
-                $rec = $dbh->prepare($query);
-                $rec->execute();
-                $results = $rec->fetchAll(PDO::FETCH_COLUMN);
-                foreach ($results as $k => $tweets_table) {
-                    if (!preg_match("/_tweets$/", $tweets_table)) continue; 
-                    $badzone = 'Europe/London';
-                    logit($logtarget, "Fixing timezone for created_at field in table '$tweets_table' ..");
-                    if (TCAT_CONFIG_DEPRECATED_TIMEZONE && TCAT_CONFIG_DEPRECATED_TIMEZONE_CONFIGURED) {
-                        $badzone = TCAT_CONFIG_DEPRECATED_TIMEZONE_CONFIGURED;
-                    }
-                    $sql = "SELECT id, CONVERT_TZ(MAX(created_at), 'UTC', '$badzone') FROM `$tweets_table` WHERE created_at < ( SELECT ratelimit_format_modified_at FROM tcat_status )";
-                    logit($logtarget, "$sql");
-                    $rec2 = $dbh->prepare($sql);
-                    $rec2->execute();
-                    $results2 = $rec2->fetch(PDO::FETCH_ASSOC);
-                    $max_id = $results2['id'];
-                    if (is_null($max_id)) {
-                        logit($logtarget, "Table is either empty or does not need to be fixed. Skipping.");
-                        continue;
-                    } 
-                    $dbh->beginTransaction();
-                    $sql = "UPDATE `$tweets_table` SET created_at = CONVERT_TZ(created_at, 'UTC', '$badzone') WHERE id <= $max_id";
-                    logit($logtarget, "$sql");
-                    $dbh->commit();
-                }
-
-                // Start working on the gaps and ratelimit tables
-
-                $ts = time();
-                logit($logtarget, "Backuping existing tcat_error_ratelimit and tcat_error_gap information to your system's temporary directory.");
-                $targetfile = sys_get_temp_dir() . "/tcat_error_ratelimit_and_gap_$ts.sql";
-                if (!file_exists($targetfile)) {
-                    $cmd = "$bin_mysqldump --default-character-set=utf8mb4 -u$dbuser -h $hostname $database tcat_error_ratelimit tcat_error_gap > " . $targetfile;
-                    system($cmd, $retval);
+                // We need functioning timezone tables for this upgrade step
+                if (import_mysql_timezone_data() == FALSE) {
+                    logit($logtarget, "ERROR -----");
+                    logit($logtarget, "ERROR - Your MySQL server is unfortunately missing timezone data which is needed to perform this upgrade step.");
+                    logit($logtarget, "ERROR - This is usually caused by having a non-root user connecting to the database server.");
+                    logit($logtarget, "ERROR - Your current configuration is secure and actually the recommended one (as it is also set-up this way by the TCAT auto-installer).");
+                    logit($logtarget, "ERROR - But you will now have to perform a single superuser (sudo) command manually.");
+                    logit($logtarget, "ERROR -");
+                    logit($logtarget, "ERROR - For Debian or Ubuntu systems, become root (using sudo su) and execute the following command:");
+                    logit($logtarget, "ERROR -");
+                    logit($logtarget, "ERROR - /usr/bin/mysql_tzinfo_to_sql /usr/share/zoneinfo | sudo mysql -u debian-sys-maint -p`cat /etc/mysql/debian.cnf | grep -e \"password\" | head -n 1 | sed -e 's/^password = //'` mysql");
+                    logit($logtarget, "ERROR -");
+                    logit($logtarget, "ERROR - (you can safely ignore the line: Warning: Unable to load '/usr/share/zoneinfo/leap-seconds.list' as time zone. Skipping it.')");
+                    logit($logtarget, "ERROR -");
+                    logit($logtarget, "ERROR - For all other operating systems, please read the MySQL instructions here: http://dev.mysql.com/doc/refman/5.7/en/mysql-tzinfo-to-sql.html");
+                    logit($logtarget, "ERROR -----");
+                    logit($logtarget, "Discontinuing this upgrade step until the issue has been resolved.");
                 } else {
-                    $retval = 1;    // failure
-                }
-                if ($retval != 0) {
-                    logit($logtarget, "I couldn't create a backup at $targetfile - perhaps the backup already exists? Aborting this upgrade step.");
-                } else {
-                    logit($logtarget, $cmd);
-                    $cmd = "$bin_gzip $targetfile";
-                    logit($logtarget, $cmd);
-                    system($cmd);
-                    logit($logtarget, "Backup placed here - you may want to store it somewhere else: " . $targetfile . '.gz');
 
-                    // We tell MySQL we want to work within the same timezone as the PHP timezone defined in config.php.
-                    // An issue described here (https://github.com/digitalmethodsinitiative/dmi-tcat/issues/197) which awaits a generalized solution
-                    // This affects our statements with NOW()
-                    $rec = $dbh->prepare("SET time_zone='" . date_default_timezone_get() . "'");
+                    // First make sure the historical tweet data is correct
+
+                    $query = "SHOW TABLES";
+                    $rec = $dbh->prepare($query);
                     $rec->execute();
-
-                    /*
-                     * First part: rate limits
-                     */
-
-                    /*
-                     * Strategy:
-                     *
-                     * As recording of ratelimit continues in tcat_error_ratelimit, we build a tcat_error_ratelimit_upgrade table.
-                     * For the entire timespan _before_ the new gauge behaviour became effective, we do a minute-interval reconstruction in this temporary upgrade table.
-                     * Finally we throw away existing tcat_error_ratelimit entries from this era and insert the ones from our temporary table.
-                     *
-                     */
-
-                    $sql = "create temporary table if not exists tcat_error_ratelimit_upgrade ( id bigint, `type` varchar(32), start datetime not null, end datetime not null, tweets bigint not null, primary key(id, type), index(type), index(start), index(end) ) ENGINE=MyISAM";
-                    $rec = $dbh->prepare($sql);
-                    $rec->execute();
-
-                    $sql = "select unix_timestamp(min(start)) as beginning_unix from tcat_error_ratelimit";
-                    $rec = $dbh->prepare($sql);
-                    $rec->execute();
-                    $results = $rec->fetch(PDO::FETCH_ASSOC);
-                    $beginning_unix = $results['beginning_unix'];
-                    if (is_null($beginning_unix)) {
-                        $difference_minutes = 0;
-                    } else {
-                        $difference_minutes = round(($now_unix / 60 - $beginning_unix / 60) + 1);
-                    }
-                    logit($logtarget, "We have ratelimit information on this server for the past $difference_minutes minutes.");
-                    logit($logtarget, "Reconstructing the rate limit for these now.");
-
-                    // If we have an end before a start time, we are sure we cannot trust any minute measurements before this occurence.
-                    // This situation (end < start) was related to a bug in the toDateTime() function, which formatted the minute-part wrong.
-
-                    $sql = "select max(start) as time_fixed_dateformat, unix_timestamp(max(start)) as timestamp_fixed_dateformat from tcat_error_ratelimit where end < start";
-                    $rec = $dbh->prepare($sql);
-                    $rec->execute();
-                    $results = $rec->fetch(PDO::FETCH_ASSOC);
-                    $ratelimit_time_fixed_dateformat = $results['time_fixed_dateformat'];
-                    $ratelimit_timestamp_fixed_dateformat = $results['timestamp_fixed_dateformat'];
-
-                    $sql = "select max(start) as time_fixed_dateformat, unix_timestamp(max(start)) as timestamp_fixed_dateformat from tcat_error_gap where end < start";
-                    $rec = $dbh->prepare($sql);
-                    $rec->execute();
-                    $results = $rec->fetch(PDO::FETCH_ASSOC);
-                    $gap_time_fixed_dateformat = $results['time_fixed_dateformat'];
-                    $gap_timestamp_fixed_dateformat = $results['timestamp_fixed_dateformat'];
-
-                    // Compare query results and pick earliest possible moment of distrust.
-
-                    if (!$ratelimit_time_fixed_dateformat && !$gap_time_fixed_dateformat) {
-                        // Assume all measurements where hour-based until now.
-                        logit($logtarget, "Dateformat fix not found");
-                        $time_fixed_dateformat = $now;
-                        $timestamp_fixed_dateformat = $now_unix;
-                    } elseif (!$ratelimit_time_fixed_dateformat) {
-                        // We have only information in the gap table
-                        logit($logtarget, "Dateformat fix solely in tcat_error_gap");
-                        $time_fixed_dateformat = $gap_time_fixed_dateformat;
-                        $timestamp_fixed_dateformat = $gap_timestamp_fixed_dateformat;
-                    } elseif (!$gap_time_fixed_dateformat) {
-                        // We have only information in the ratelimit table
-                        logit($logtarget, "Dateformat fix solely in tcat_error_ratelimit");
-                        $time_fixed_dateformat = $ratelimit_time_fixed_dateformat;
-                        $timestamp_fixed_dateformat = $ratelimit_timestamp_fixed_dateformat;
-                    } else {
-                        // Compare table information
-                        if ($gap_timestamp_fixed_dateformat > $ratelimit_timestamp_fixed_dateformat) {
-                            logit($logtarget, "Dateformat fix learned from tcat_error_gap");
-                            $time_fixed_dateformat = $gap_time_fixed_dateformat;
-                            $timestamp_fixed_dateformat = $gap_timestamp_fixed_dateformat;
-                        } else {
-                            logit($logtarget, "Dateformat fix learned from tcat_error_ratelimit");
-                            $time_fixed_dateformat = $ratelimit_time_fixed_dateformat;
-                            $timestamp_fixed_dateformat = $ratelimit_timestamp_fixed_dateformat;
+                    $results = $rec->fetchAll(PDO::FETCH_COLUMN);
+                    foreach ($results as $k => $tweets_table) {
+                        if (!preg_match("/_tweets$/", $tweets_table)) continue; 
+                        $badzone = 'Europe/London';
+                        logit($logtarget, "Fixing timezone for created_at field in table '$tweets_table' ..");
+                        if (TCAT_CONFIG_DEPRECATED_TIMEZONE && TCAT_CONFIG_DEPRECATED_TIMEZONE_CONFIGURED) {
+                            $badzone = TCAT_CONFIG_DEPRECATED_TIMEZONE_CONFIGURED;
                         }
-                    }
-
-                    logit($logtarget, "Dateformat fix found at '$time_fixed_dateformat'");
-
-                    logit($logtarget, "Processing everything before MySQL date $now");
-
-                    // Zero all minutes until the beginning of our capture era, for roles track and follow
-
-                    for ($i = 1; $i <= $difference_minutes; $i++) {
-                        $sql = "insert into tcat_error_ratelimit_upgrade ( id, `type`, `start`, `end`, `tweets` ) values ( $i, 'track',
-                                            date_sub( date_sub('$now', interval $i minute), interval second(date_sub('$now', interval $i minute)) second ),
-                                            date_sub( date_sub('$now', interval " . ($i - 1) . " minute), interval second(date_sub('$now', interval " . ($i - 1) . " minute)) second ),
-                                            0 )";
-                        $rec = $dbh->prepare($sql);
-                        $rec->execute();
-                        $sql = "insert into tcat_error_ratelimit_upgrade ( id, `type`, `start`, `end`, `tweets` ) values ( $i, 'follow',
-                                            date_sub( date_sub('$now', interval $i minute), interval second(date_sub('$now', interval $i minute)) second ),
-                                            date_sub( date_sub('$now', interval " . ($i - 1) . " minute), interval second(date_sub('$now', interval " . ($i - 1) . " minute)) second ),
-                                            0 )";
-                        $rec = $dbh->prepare($sql);
-                        $rec->execute();
-                        if ($i % ($difference_minutes/100) == 0) {
-                            logit($logtarget, "Creating temporary table " . round($i/$difference_minutes * 100)  . "% completed");
+                        /*
+                         * NOTE: The MySQL native function CONVERT_TZ(datetimestring, 'UTC', 'badtimezone') helps to undo the bug described
+                         *       Here:  https://github.com/digitalmethodsinitiative/dmi-tcat/issues/197
+                         *       And here: https://github.com/digitalmethodsinitiative/dmi-tcat/pull/194
+                         */
+                        $sql = "SELECT id, created_at FROM `$tweets_table` WHERE created_at < '$now' ORDER BY CONVERT_TZ(created_at, 'UTC', '$badzone') DESC LIMIT 1";
+                        logit($logtarget, "$sql");
+                        $rec2 = $dbh->prepare($sql);
+                        $rec2->execute();
+                        $results2 = $rec2->fetch(PDO::FETCH_ASSOC);
+                        $max_id = $results2['id'];
+                        if (is_null($max_id)) {
+                            logit($logtarget, "Table is either empty or does not need to be fixed. Skipping.");
+                            continue;
                         } 
+                        $dbh->beginTransaction();
+                        $binname = preg_replace("/_tweets$/", "", $tweets_table);
+                        $orig_access = TCAT_QUERYBIN_ACCESS_OK;
+                        if (in_array($binname, $all_bins)) {
+                            $sql = "SELECT `access` FROM tcat_query_bins WHERE querybin = :querybin"; 
+                            logit($logtarget, "$sql");
+                            $rec2 = $dbh->prepare($sql);
+                            $rec2->bindParam(":querybin", $binname, PDO::PARAM_STR);
+                            $rec2->execute();
+                            $results2 = $rec2->fetch(PDO::FETCH_ASSOC);
+                            $orig_access = $results2['access'];
+                            $sql = "UPDATE tcat_query_bins SET access = " . TCAT_QUERYBIN_ACCESS_WRITEONLY . " WHERE querybin = :querybin"; 
+                            logit($logtarget, "$sql");
+                            $rec2 = $dbh->prepare($sql);
+                            $rec2->bindParam(":querybin", $binname, PDO::PARAM_STR);
+                            $rec2->execute();
+                        }
+                        $sql = "UPDATE `$tweets_table` SET created_at = CONVERT_TZ(created_at, 'UTC', '$badzone') WHERE id <= $max_id";
+                        logit($logtarget, "$sql");
+                        $rec2 = $dbh->prepare($sql);
+                        $rec2->execute();
+                        if (in_array($binname, $all_bins)) {
+                            $sql = "UPDATE tcat_query_bins SET access = :access WHERE querybin = :querybin"; 
+                            logit($logtarget, "$sql");
+                            $rec2 = $dbh->prepare($sql);
+                            $rec2->bindParam(":access", $orig_access, PDO::PARAM_INT);
+                            $rec2->bindParam(":querybin", $binname, PDO::PARAM_STR);
+                            $rec2->execute();
+                        }
+                        $dbh->commit();
                     }
 
-                    logit($logtarget, "Building a new ratelimit table in temporary space");
+                    // Start working on the gaps and ratelimit tables
 
-                    $roles = array ( 'track', 'follow' );
+                    $ts = time();
+                    logit($logtarget, "Backuping existing tcat_error_ratelimit and tcat_error_gap information to your system's temporary directory.");
+                    $targetfile = sys_get_temp_dir() . "/tcat_error_ratelimit_and_gap_$ts.sql";
+                    if (!file_exists($targetfile)) {
+                        $cmd = "$bin_mysqldump --default-character-set=utf8mb4 -u$dbuser -h $hostname $database tcat_error_ratelimit tcat_error_gap > " . $targetfile;
+                        system($cmd, $retval);
+                    } else {
+                        $retval = 1;    // failure
+                    }
+                    if ($retval != 0) {
+                        logit($logtarget, "I couldn't create a backup at $targetfile - perhaps the backup already exists? Aborting this upgrade step.");
+                    } else {
+                        logit($logtarget, $cmd);
+                        $cmd = "$bin_gzip $targetfile";
+                        logit($logtarget, $cmd);
+                        system($cmd);
+                        logit($logtarget, "Backup placed here - you may want to store it somewhere else: " . $targetfile . '.gz');
 
-                    foreach ($roles as $role) {
-
-                        logit($logtarget, "Handle rate limits for role $role");
+                        // We tell MySQL we want to work within the same timezone as the PHP timezone defined in config.php.
+                        // An issue described here (https://github.com/digitalmethodsinitiative/dmi-tcat/issues/197) which awaits a generalized solution
+                        // This affects our statements with NOW()
+                        $rec = $dbh->prepare("SET time_zone='" . date_default_timezone_get() . "'");
+                        $rec->execute();
 
                         /*
-                         * Start reading the tcat_error_ratelimit table for the role we are working on. We are using the 'start' column because it contains sufficient information.
+                         * First part: rate limits
                          */
-                        $sql = "select id,
-                                       `type` as role,
-                                       date_format(start, '%k') as measure_hour,
-                                       date_format(start, '%i') as measure_minute,
-                                       tweets as incr_record from tcat_error_ratelimit where `type` = '$role'
-                                       order by id desc";
+
+                        /*
+                         * Strategy:
+                         *
+                         * As recording of ratelimit continues in tcat_error_ratelimit, we build a tcat_error_ratelimit_upgrade table.
+                         * For the entire timespan _before_ the new gauge behaviour became effective, we do a minute-interval reconstruction in this temporary upgrade table.
+                         * Finally we throw away existing tcat_error_ratelimit entries from this era and insert the ones from our temporary table.
+                         *
+                         */
+
+                        $sql = "create temporary table if not exists tcat_error_ratelimit_upgrade ( id bigint, `type` varchar(32), start datetime not null, end datetime not null, tweets bigint not null, primary key(id, type), index(type), index(start), index(end) ) ENGINE=MyISAM";
                         $rec = $dbh->prepare($sql);
                         $rec->execute();
-                        $consolidate_hour = -1;         // the hour we are working on to consolidate our data
-                        $consolidate_minute = -1;       // the minute we are working on to consolidate our data
-                        $consolidate_max_id = -1;       // the maximum tcat_error_ratelimit ID within the consolidation timeframe
-                        while ($res = $rec->fetch()) {
-                            // measure_minute will contain the minute we are reading from the table (remember: backwards in time)
-                            $measure_minute = ltrim($res['measure_minute']);
-                            if ($measure_minute == '') {
-                                $measure_minute = 0;
+
+                        $sql = "select unix_timestamp(min(start)) as beginning_unix from tcat_error_ratelimit";
+                        $rec = $dbh->prepare($sql);
+                        $rec->execute();
+                        $results = $rec->fetch(PDO::FETCH_ASSOC);
+                        $beginning_unix = $results['beginning_unix'];
+                        if (is_null($beginning_unix)) {
+                            $difference_minutes = 0;
+                        } else {
+                            $difference_minutes = round(($now_unix / 60 - $beginning_unix / 60) + 1);
+                        }
+                        logit($logtarget, "We have ratelimit information on this server for the past $difference_minutes minutes.");
+                        logit($logtarget, "Reconstructing the rate limit for these now.");
+
+                        // If we have an end before a start time, we are sure we cannot trust any minute measurements before this occurence.
+                        // This situation (end < start) was related to a bug in the toDateTime() function, which formatted the minute-part wrong.
+
+                        $sql = "select max(start) as time_fixed_dateformat, unix_timestamp(max(start)) as timestamp_fixed_dateformat from tcat_error_ratelimit where end < start";
+                        $rec = $dbh->prepare($sql);
+                        $rec->execute();
+                        $results = $rec->fetch(PDO::FETCH_ASSOC);
+                        $ratelimit_time_fixed_dateformat = $results['time_fixed_dateformat'];
+                        $ratelimit_timestamp_fixed_dateformat = $results['timestamp_fixed_dateformat'];
+
+                        $sql = "select max(start) as time_fixed_dateformat, unix_timestamp(max(start)) as timestamp_fixed_dateformat from tcat_error_gap where end < start";
+                        $rec = $dbh->prepare($sql);
+                        $rec->execute();
+                        $results = $rec->fetch(PDO::FETCH_ASSOC);
+                        $gap_time_fixed_dateformat = $results['time_fixed_dateformat'];
+                        $gap_timestamp_fixed_dateformat = $results['timestamp_fixed_dateformat'];
+
+                        // Compare query results and pick earliest possible moment of distrust.
+
+                        if (!$ratelimit_time_fixed_dateformat && !$gap_time_fixed_dateformat) {
+                            // Assume all measurements where hour-based until now.
+                            logit($logtarget, "Dateformat fix not found");
+                            $time_fixed_dateformat = $now;
+                            $timestamp_fixed_dateformat = $now_unix;
+                        } elseif (!$ratelimit_time_fixed_dateformat) {
+                            // We have only information in the gap table
+                            logit($logtarget, "Dateformat fix solely in tcat_error_gap");
+                            $time_fixed_dateformat = $gap_time_fixed_dateformat;
+                            $timestamp_fixed_dateformat = $gap_timestamp_fixed_dateformat;
+                        } elseif (!$gap_time_fixed_dateformat) {
+                            // We have only information in the ratelimit table
+                            logit($logtarget, "Dateformat fix solely in tcat_error_ratelimit");
+                            $time_fixed_dateformat = $ratelimit_time_fixed_dateformat;
+                            $timestamp_fixed_dateformat = $ratelimit_timestamp_fixed_dateformat;
+                        } else {
+                            // Compare table information
+                            if ($gap_timestamp_fixed_dateformat > $ratelimit_timestamp_fixed_dateformat) {
+                                logit($logtarget, "Dateformat fix learned from tcat_error_gap");
+                                $time_fixed_dateformat = $gap_time_fixed_dateformat;
+                                $timestamp_fixed_dateformat = $gap_timestamp_fixed_dateformat;
+                            } else {
+                                logit($logtarget, "Dateformat fix learned from tcat_error_ratelimit");
+                                $time_fixed_dateformat = $ratelimit_time_fixed_dateformat;
+                                $timestamp_fixed_dateformat = $ratelimit_timestamp_fixed_dateformat;
                             }
-                            // measure_hour will contain the minute we are reading from the table (again: backwards in time)
-                            $measure_hour = $res['measure_hour'];
-                            if ($measure_minute != $consolidate_minute || $measure_hour != $consolidate_hour) {
-                                /* 
-                                 * We are reading a new entry not inside our consolidation frame (which has the resolution of an hour or minute)
-                                 * We will consolidate our data, unless we are at the first row.
-                                 */
-                                if ($consolidate_minute == -1) {
-                                    // first row received
-                                    $consolidate_minute = $measure_minute;
-                                    $consolidate_hour = $measure_hour;
-                                    $consolidate_max_id = $res['id'];
-                                } else {
-                                    $controller_restart_detected = false;
-                                    /*
-                                     * The SQL query below reads the MIN and MAX recorded tweets values for our interval.
-                                     *
-                                     * It additionally checks to detect controller resets. Whenever the controller resets itself, because of a crash or server reboot,
-                                     * the incremental counter will jump to zero. This SQL query recognizes this sudden jump by explicitely verifying the order.
-                                     *
-                                     * Note: this query uses max(start) to determine the start parameter to pass to the smoothing function. If we would've used min(start),
-                                     * we inadvertently include the start column of the NEXT row, and that's not our intention. Because we are using max(start), it is
-                                     * possible that the difference in minutes between the 'start' and 'end' becomes less than 1 minute. Our smoother function is
-                                     * aware of this.
-                                     *
+                        }
+
+                        logit($logtarget, "Dateformat fix found at '$time_fixed_dateformat'");
+
+                        logit($logtarget, "Processing everything before MySQL date $now");
+
+                        // Zero all minutes until the beginning of our capture era, for roles track and follow
+
+                        for ($i = 1; $i <= $difference_minutes; $i++) {
+                            $sql = "insert into tcat_error_ratelimit_upgrade ( id, `type`, `start`, `end`, `tweets` ) values ( $i, 'track',
+                                                date_sub( date_sub('$now', interval $i minute), interval second(date_sub('$now', interval $i minute)) second ),
+                                                date_sub( date_sub('$now', interval " . ($i - 1) . " minute), interval second(date_sub('$now', interval " . ($i - 1) . " minute)) second ),
+                                                0 )";
+                            $rec = $dbh->prepare($sql);
+                            $rec->execute();
+                            $sql = "insert into tcat_error_ratelimit_upgrade ( id, `type`, `start`, `end`, `tweets` ) values ( $i, 'follow',
+                                                date_sub( date_sub('$now', interval $i minute), interval second(date_sub('$now', interval $i minute)) second ),
+                                                date_sub( date_sub('$now', interval " . ($i - 1) . " minute), interval second(date_sub('$now', interval " . ($i - 1) . " minute)) second ),
+                                                0 )";
+                            $rec = $dbh->prepare($sql);
+                            $rec->execute();
+                            if ($i % ($difference_minutes/100) == 0) {
+                                logit($logtarget, "Creating temporary table " . round($i/$difference_minutes * 100)  . "% completed");
+                            } 
+                        }
+
+                        logit($logtarget, "Building a new ratelimit table in temporary space");
+
+                        $roles = array ( 'track', 'follow' );
+
+                        foreach ($roles as $role) {
+
+                            logit($logtarget, "Handle rate limits for role $role");
+
+                            /*
+                             * Start reading the tcat_error_ratelimit table for the role we are working on. We are using the 'start' column because it contains sufficient information.
+                             */
+                            $sql = "select id,
+                                           `type` as role,
+                                           date_format(start, '%k') as measure_hour,
+                                           date_format(start, '%i') as measure_minute,
+                                           tweets as incr_record from tcat_error_ratelimit where `type` = '$role'
+                                           order by id desc";
+                            $rec = $dbh->prepare($sql);
+                            $rec->execute();
+                            $consolidate_hour = -1;         // the hour we are working on to consolidate our data
+                            $consolidate_minute = -1;       // the minute we are working on to consolidate our data
+                            $consolidate_max_id = -1;       // the maximum tcat_error_ratelimit ID within the consolidation timeframe
+                            while ($res = $rec->fetch()) {
+                                // measure_minute will contain the minute we are reading from the table (remember: backwards in time)
+                                $measure_minute = ltrim($res['measure_minute']);
+                                if ($measure_minute == '') {
+                                    $measure_minute = 0;
+                                }
+                                // measure_hour will contain the minute we are reading from the table (again: backwards in time)
+                                $measure_hour = $res['measure_hour'];
+                                if ($measure_minute != $consolidate_minute || $measure_hour != $consolidate_hour) {
+                                    /* 
+                                     * We are reading a new entry not inside our consolidation frame (which has the resolution of an hour or minute)
+                                     * We will consolidate our data, unless we are at the first row.
                                      */
-                                    $sql = "select max(tweets) as record_max,
-                                                   min(tweets) as record_min,
-                                                   max(start) as start, unix_timestamp(max(start)) as start_unix,
-                                                   max(end) as end, unix_timestamp(max(end)) as end_unix
-                                            from tcat_error_ratelimit where `type` = '$role' and
-                                                   id >= " . $res['id'] . " and
-                                                   id <= $consolidate_max_id and
-                                                        ( select tweets from tcat_error_ratelimit where id = $consolidate_max_id ) >
-                                                        ( select tweets from tcat_error_ratelimit where id = " . $res['id'] . " )";
-                                    $rec2 = $dbh->prepare($sql);
-                                    $rec2->execute();       // our query will always return a non-empty result, because min()/max() always produce a row (with a possible NULL as value)
-                                    while ($res2 = $rec2->fetch()) {
-                                        if ($res2['record_max'] == null) {
-                                            // The order is NOT incremental.
-                                            $controller_restart_detected = true;
-                                        }
-                                        $record_max = $res2['record_max'];
-                                        $record_min = $res2['record_min'];
-                                        $record = $record_max - $record_min;
-                                        if ($controller_restart_detected) {
-                                        } elseif ($record >= 0) {
-                                            ratelimit_smoother($dbh, $timestamp_fixed_dateformat, $role, $res2['start'], $res2['end'], $res2['start_unix'], $res2['end_unix'], $record);
-                                        }
-                                    }
-                                    $consolidate_minute = $measure_minute;
-                                    $consolidate_hour = $measure_hour;
-                                    $consolidate_max_id = $res['id'];
-                                }
-                            }
-                        }
-                        if ($consolidate_minute != -1) {
-                            // we consolidate the last minute
-                            $sql = "select max(tweets) as record_max,
-                                           min(tweets) as record_min,
-                                           min(start) as start, unix_timestamp(min(start)) as start_unix,
-                                           max(end) as end, unix_timestamp(max(end)) as end_unix
-                                    from tcat_error_ratelimit where `type` = '$role' and
-                                           id <= $consolidate_max_id";
-                            $rec2 = $dbh->prepare($sql);
-                            $rec2->execute();
-                            while ($res2 = $rec2->fetch()) {
-                                $record_max = $res2['record_max'];
-                                $record_min = $res2['record_min'];
-                                $record = $record_max - $record_min;
-                                if ($record > 0) {
-                                    ratelimit_smoother($dbh, $timestamp_fixed_dateformat, $role, $res2['start'], $res2['end'], $res2['start_unix'], $res2['end_unix'], $record);
-                                }
-                            }
-                        }
-                    }
-
-                    // By using a TRANSACTION block here, we ensure the tcat_error_ratelimit will not end up in an undefined state
-
-                    $dbh->beginTransaction();
-
-                    $sql = "delete from tcat_error_ratelimit where start < '$now' or end < '$now'";
-                    $rec = $dbh->prepare($sql);
-                    logit($logtarget, "Removing old records from tcat_error_ratelimit");
-                    $rec->execute();
-
-                    $sql = "insert into tcat_error_ratelimit ( `type`, start, end, tweets ) select `type`, start, end, tweets from tcat_error_ratelimit_upgrade order by start asc";
-                    $rec = $dbh->prepare($sql);
-                    logit($logtarget, "Inserting new records into tcat_error_ratelimit");
-                    $rec->execute();
-
-                    /*
-                     * The next operation will break the tie between the ascending order of the ID primary key, and the datetime columns start and end. This is not a problem per se.
-                     * Rebuilding that order is feasible, but we shouldn't re-run this upgrade step anyway and this will never be presented as an option to the user.
-                     * If something goes wrong, restore the original table from the backup instead.
-                     */
-
-                    $sql = "insert into tcat_status ( variable, value ) values ( 'ratelimit_database_rebuild', '1' )";
-                    $rec = $dbh->prepare($sql);
-                    $rec->execute();
-
-                    $dbh->commit();
-
-                    logit($logtarget, "Rebuilding of tcat_error_ratelimit has finished");
-                    $sql = "drop table tcat_error_ratelimit_upgrade";
-                    $rec = $dbh->prepare($sql);
-                    $rec->execute();
-
-                    /*
-                     * Second part: gaps
-                     *
-                     * Notice we do all datetime functions in native MySQL. This may appear to be cumbersome but is has the advantage of having to do a minimal ammount of datetime conversions,
-                     * and being able to mostly ignore the system clock (OS), with the single exception of the reduce_gap_size() function.
-                     * The gap table is not big and this upgrade step should maximally take several hours on long-running servers.
-                     */
-
-                    logit($logtarget, "Now rebuilding tcat_error_gap table");
-
-                    // We need functioning timezone tables for this upgrade step
-                    mysql_tzinfo_to_sql();
-
-                    $existing_roles = array ( 'track', 'follow', 'onepercent' );
-                    foreach ($existing_roles as $type) {
-
-                        $time_begin_gap = $timestamp_begin_gap = null;
-
-                        // Note: 1970-01-01 is the Unix timestamp for NULL. It was written to the database whenever there was a gap with an 'unknown' start time,
-                        // due to the fact that there was no proc/ information available to the controller. This behaviour has changed.
-
-                        $sql = "select min(start) as time_begin_gap, unix_timestamp(min(start)) as timestamp_begin_gap FROM tcat_error_gap where type = '$type' and start > '1970-01-01 01:01:00'";
-                        $rec = $dbh->prepare($sql);
-                        $rec->execute();
-                        if ($rec->execute() && $rec->rowCount() > 0) {
-                            while ($row = $rec->fetch(PDO::FETCH_ASSOC)) {
-                                $time_begin_gap = $row['time_begin_gap'];
-                                $timestamp_begin_gap = $row['timestamp_begin_gap'];
-                            }
-                        }
-
-                        if (!$now || !$now_unix || !$time_begin_gap || !$timestamp_begin_gap) {
-                            logit($logtarget, "Nothing to do for role $type");
-                            continue;
-                        }
-
-                        $difference_minutes = round(($now_unix / 60 - $timestamp_begin_gap / 60) + 1);
-                        logit($logtarget, "For role $type, we have gap information on this server for the past $difference_minutes minutes.");
-
-                        $gaps = array();
-
-                        $sql = "select * from tcat_error_gap where type = '$type' and start > '1970-01-01 01:01:00' and end < '$now' order by id, start asc";
-                        $rec = $dbh->prepare($sql);
-                        $rec->execute();
-                        $ignore_start = $already_recorded_until = null;
-                        $trust_minute_measurement = false;
-                        while ($row = $rec->fetch(PDO::FETCH_ASSOC)) {
-                            if ($row['start'] == $ignore_start) { continue; }
-                            // If we are being told about a gap we already know, skip it
-                            if ($already_recorded_until) {
-                                $sql2 = "select '" . $row['start'] . "' > '$already_recorded_until'";
-                                $rec2 = $dbh->prepare($sql2);
-                                $rec2->execute();
-                                $later_in_time = $rec2->fetchColumn();
-                                if ($later_in_time != '1') {
-                                    // Not registering the gap starting at $row['start'] here, because it is already accounted for.
-                                    continue;
-                                }
-                            }
-                            // If we know for a fact the minute measurement is accurate, we work with that precision, and otherwise
-                            // we try to attain it by searching the real capture data.
-                            if (!$trust_minute_measurement) {
-                                $sql2 = "select '" . $row['start'] . "' > '$time_fixed_dateformat'";
-                                $rec2 = $dbh->prepare($sql2);
-                                $rec2->execute();
-                                $later_in_time = $rec2->fetchColumn();
-                                if ($later_in_time == '1') {
-                                    $trust_minute_measurement = true;
-                                }
-                            }
-                            // The controller could create repeated rows with the same 'start' value if it didn't manage to boot up a role
-                            // The next query recognizes this.
-                            $sql2 = "select max(end) as max_end from tcat_error_gap where type = '$type' and start = '" . $row['start'] . "'";
-                            $rec2 = $dbh->prepare($sql2);
-                            $rec2->execute();
-                            $max_end = null;
-                            while ($row2 = $rec2->fetch(PDO::FETCH_ASSOC)) {
-                                $max_end = $row2['max_end'];
-                                break;
-                            }
-                            if ($max_end) {
-                                // Example: '2016-04-19 03:12:44'
-                                if (preg_match("/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/", $max_end, $matches_end) &&
-                                    preg_match("/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/", $row['start'], $matches_start)) {
-
-                                    if (!$trust_minute_measurement) {
-
-                                        // Drop a distrusted minute measurement due to previous dateformat bug
-                                        // This first defines the gap as wide as possible (with an hourly precision). Afterwards we prune it by searching the real capture data.
-
-                                        $matches_start[5] = '00';   // minutes start
-                                        $matches_start[6] = '00';   // seconds start
-                                        $matches_end[5] = '59';     // minutes end
-                                        $matches_end[6] = '59';     // seconds end
-
-                                        $new_start = $matches_start[1] . '-' . $matches_start[2] . '-' . $matches_start[3] . ' ' .
-                                                     $matches_start[4] . ':' . $matches_start[5] . ':' . $matches_start[6];
-                                        $new_end = $matches_end[1] . '-' . $matches_end[2] . '-' . $matches_end[3] . ' ' .
-                                                   $matches_end[4] . ':' . $matches_end[5] . ':' . $matches_end[6];
-
-                                        // Now attempt to reduce the gap size
-
-                                        $reduced = reduce_gap_size($type, $new_start, $new_end);
-                                        if (is_null($reduced)) {
-                                            logit($logtarget, "Erroneous gap report for role $type from '" . $new_start . "' to '" . $new_end . "'");
-                                        } else {
-                                            $new_start = $reduced['shrunk_start'];
-                                            $new_end = $reduced['shrunk_end'];
-                                        }
-
+                                    if ($consolidate_minute == -1) {
+                                        // first row received
+                                        $consolidate_minute = $measure_minute;
+                                        $consolidate_hour = $measure_hour;
+                                        $consolidate_max_id = $res['id'];
                                     } else {
-
-                                        // Just copy both complete strings
-
-                                        $new_start = $matches_start[0];
-                                        $new_end = $matches_end[0];
-
-    //                                    logit($logtarget, "We trust the next recorded gap without search");
-
-                                    }
-
-                                    // logit($logtarget, "Detected possible gap from '" . $new_start . "' to '" . $new_end . "' - now investigating");
-                                    
-                                    logit($logtarget, "Recording gap for role $type from '" . $new_start . "' to '" . $new_end . "'");
-                                    $duplicate = false;
-                                    foreach ($gaps as $gap) {
-                                        if ($gap['start'] == $new_start && $gap['end'] == $new_end) {
-                                            $duplicate = true;
+                                        $controller_restart_detected = false;
+                                        /*
+                                         * The SQL query below reads the MIN and MAX recorded tweets values for our interval.
+                                         *
+                                         * It additionally checks to detect controller resets. Whenever the controller resets itself, because of a crash or server reboot,
+                                         * the incremental counter will jump to zero. This SQL query recognizes this sudden jump by explicitely verifying the order.
+                                         *
+                                         * Note: this query uses max(start) to determine the start parameter to pass to the smoothing function. If we would've used min(start),
+                                         * we inadvertently include the start column of the NEXT row, and that's not our intention. Because we are using max(start), it is
+                                         * possible that the difference in minutes between the 'start' and 'end' becomes less than 1 minute. Our smoother function is
+                                         * aware of this.
+                                         *
+                                         */
+                                        $sql = "select max(tweets) as record_max,
+                                                       min(tweets) as record_min,
+                                                       max(start) as start, unix_timestamp(max(start)) as start_unix,
+                                                       max(end) as end, unix_timestamp(max(end)) as end_unix
+                                                from tcat_error_ratelimit where `type` = '$role' and
+                                                       id >= " . $res['id'] . " and
+                                                       id <= $consolidate_max_id and
+                                                            ( select tweets from tcat_error_ratelimit where id = $consolidate_max_id ) >
+                                                            ( select tweets from tcat_error_ratelimit where id = " . $res['id'] . " )";
+                                        $rec2 = $dbh->prepare($sql);
+                                        $rec2->execute();       // our query will always return a non-empty result, because min()/max() always produce a row (with a possible NULL as value)
+                                        while ($res2 = $rec2->fetch()) {
+                                            if ($res2['record_max'] == null) {
+                                                // The order is NOT incremental.
+                                                $controller_restart_detected = true;
+                                            }
+                                            $record_max = $res2['record_max'];
+                                            $record_min = $res2['record_min'];
+                                            $record = $record_max - $record_min;
+                                            if ($controller_restart_detected) {
+                                            } elseif ($record >= 0) {
+                                                ratelimit_smoother($dbh, $timestamp_fixed_dateformat, $role, $res2['start'], $res2['end'], $res2['start_unix'], $res2['end_unix'], $record);
+                                            }
                                         }
+                                        $consolidate_minute = $measure_minute;
+                                        $consolidate_hour = $measure_hour;
+                                        $consolidate_max_id = $res['id'];
                                     }
-                                    if (!$duplicate) {
-                                        $gap = array( 'start' => $new_start, 'end' => $new_end );
-                                        $gaps[] = $gap;
+                                }
+                            }
+                            if ($consolidate_minute != -1) {
+                                // we consolidate the last minute
+                                $sql = "select max(tweets) as record_max,
+                                               min(tweets) as record_min,
+                                               min(start) as start, unix_timestamp(min(start)) as start_unix,
+                                               max(end) as end, unix_timestamp(max(end)) as end_unix
+                                        from tcat_error_ratelimit where `type` = '$role' and
+                                               id <= $consolidate_max_id";
+                                $rec2 = $dbh->prepare($sql);
+                                $rec2->execute();
+                                while ($res2 = $rec2->fetch()) {
+                                    $record_max = $res2['record_max'];
+                                    $record_min = $res2['record_min'];
+                                    $record = $record_max - $record_min;
+                                    if ($record > 0) {
+                                        ratelimit_smoother($dbh, $timestamp_fixed_dateformat, $role, $res2['start'], $res2['end'], $res2['start_unix'], $res2['end_unix'], $record);
                                     }
-
-                                    $ignore_start = $row['start'];
-                                    $already_recorded_until = $new_end;
-
                                 }
                             }
                         }
 
-                        // By using a TRANSACTION block here, we ensure the tcat_error_gap will not end up in an undefined state
+                        // By using a TRANSACTION block here, we ensure the tcat_error_ratelimit will not end up in an undefined state
 
                         $dbh->beginTransaction();
 
-                        $sql = "delete from tcat_error_gap where type = '$type' and end <= '$now'";
+                        $sql = "delete from tcat_error_ratelimit where start < '$now' or end < '$now'";
                         $rec = $dbh->prepare($sql);
+                        logit($logtarget, "Removing old records from tcat_error_ratelimit");
                         $rec->execute();
 
-                        // Knit gap timespans togheter if they are absolutely sequential.
+                        $sql = "insert into tcat_error_ratelimit ( `type`, start, end, tweets ) select `type`, start, end, tweets from tcat_error_ratelimit_upgrade order by start asc";
+                        $rec = $dbh->prepare($sql);
+                        logit($logtarget, "Inserting new records into tcat_error_ratelimit");
+                        $rec->execute();
 
-                        $newgaps = array();
-                        $first = true;
-                        $previous_start = $previous_end = null;
-                        foreach ($gaps as $gap) {
-                            if ($first) {
-                                $previous_start = $gap['start'];
-                                $previous_end = $gap['end'];
-                                $first = false;
-                                continue;
-                            }
-                            $sql = "select timediff('" . $gap['start'] . "', '$previous_end') as difference";
-                            $rec = $dbh->prepare($sql);
-                            $rec->execute();
-                            $difference = null;
-                            while ($row = $rec->fetch(PDO::FETCH_ASSOC)) {
-                                $difference = $row['difference'];
-                                break;
-                            }
-                            // This one second difference will be produced by us widening an hourly measurement as much as possible
-                            // (and not finding any real tweet data to shrink it)
-                            if ($gap !== end($gaps) && isset($difference) && $difference == '00:00:01') {
-                                // Keep on knittin'
-                                $previous_end = $gap['end'];
-                            } else {
-                                $newgaps[] = array ( 'start' => $previous_start, 'end' => $previous_end );
-                                $previous_start = $gap['start'];
-                                $previous_end = $gap['end'];
-                            }
-                        }
-                        // The knitting won't produce a result in a situation with only a single gap record
-                        if (count($gaps) > 1) {
-                            $gaps = $newgaps;
-                        }
+                        /*
+                         * The next operation will break the tie between the ascending order of the ID primary key, and the datetime columns start and end. This is not a problem per se.
+                         * Rebuilding that order is feasible, but we shouldn't re-run this upgrade step anyway and this will never be presented as an option to the user.
+                         * If something goes wrong, restore the original table from the backup instead.
+                         */
 
-                        foreach ($gaps as $gap) {
-                            $sql = "insert into tcat_error_gap ( `type`, `start`, `end` ) values ( '$type', '" . $gap['start'] . "', '" . $gap['end'] . "' )";
-                            $rec = $dbh->prepare($sql);
-                            $rec->execute();
-                        }
-
-                        // The final step is to prune tcap_error_gap to remove all gaps lesser than IDLETIME
-                        if (!defined('IDLETIME')) {
-                            define('IDLETIME', 600);
-                        }
-                        if (!defined('IDLETIME_FOLLOW')) {
-                            define('IDLETIME_FOLLOW', IDLETIME);
-                        }
-                        if ($type == 'follow') {
-                            $idletime = IDLETIME_FOLLOW;
-                        } else {
-                            $idletime = IDLETIME;
-                        }
-                        $sql = "delete from tcat_error_gap where time_to_sec(timediff(end,start)) < $idletime";
+                        $sql = "insert into tcat_status ( variable, value ) values ( 'ratelimit_database_rebuild', '1' )";
                         $rec = $dbh->prepare($sql);
                         $rec->execute();
 
                         $dbh->commit();
 
-                    }
+                        logit($logtarget, "Rebuilding of tcat_error_ratelimit has finished");
+                        $sql = "drop table tcat_error_ratelimit_upgrade";
+                        $rec = $dbh->prepare($sql);
+                        $rec->execute();
 
-                    logit($logtarget, "Rebuilding of tcat_error_gap has finished");
+                        /*
+                         * Second part: gaps
+                         *
+                         * Notice we do all datetime functions in native MySQL. This may appear to be cumbersome but is has the advantage of having to do a minimal ammount of datetime conversions,
+                         * and being able to mostly ignore the system clock (OS), with the single exception of the reduce_gap_size() function.
+                         * The gap table is not big and this upgrade step should maximally take several hours on long-running servers.
+                         */
 
-                    // For ratelimit exports to function, we want to have the tcat_captured_phrases table
-                    // As we have not recorded this (yet), we need to reconstruct it from the previous phrases and detect which tweets contain which queries.
-                    logit($logtarget, "Creating the tcat_captured_phrases table");
+                        logit($logtarget, "Now rebuilding tcat_error_gap table");
 
-                    create_admin();
-                    $trackbins = get_track_bin_phrases();
+                        $existing_roles = array ( 'track', 'follow', 'onepercent' );
+                        foreach ($existing_roles as $type) {
 
-                    foreach ($trackbins as $querybin => $phrases) {
-                        logit($logtarget, "Extracting keyword phrase matches from querybin $querybin and inserting into tcat_captured_phrases ..");
-                        foreach ($phrases as $phrase => $phrase_id) {
-                            if (substr($phrase, 0, 1) !== "'" && strpos($phrase, ' ') !== false) {
-                                // The user intends a AND match here, such as: [ scottish AND independence ]
-                                // Both words should be in the tweet, but not neccessarily next to each other ( according to the documentation: https://github.com/digitalmethodsinitiative/dmi-tcat/wiki/FAQ#keyword-track )
-                                $subphrases = explode(' ', $phrase);
-                                $sql = "REPLACE INTO tcat_captured_phrases ( tweet_id, phrase_id, created_at ) SELECT id, $phrase_id, created_at FROM " . quoteIdent($querybin . "_tweets") . " WHERE text REGEXP ?";
-                                if (count($subphrases) > 1) {
-                                    $sql .= str_repeat(" AND text REGEXP ?", count($subphrases) - 1);
+                            $time_begin_gap = $timestamp_begin_gap = null;
+
+                            // Note: 1970-01-01 is the Unix timestamp for NULL. It was written to the database whenever there was a gap with an 'unknown' start time,
+                            // due to the fact that there was no proc/ information available to the controller. This behaviour has changed.
+
+                            $sql = "select min(start) as time_begin_gap, unix_timestamp(min(start)) as timestamp_begin_gap FROM tcat_error_gap where type = '$type' and start > '1970-01-01 01:01:00'";
+                            $rec = $dbh->prepare($sql);
+                            $rec->execute();
+                            if ($rec->execute() && $rec->rowCount() > 0) {
+                                while ($row = $rec->fetch(PDO::FETCH_ASSOC)) {
+                                    $time_begin_gap = $row['time_begin_gap'];
+                                    $timestamp_begin_gap = $row['timestamp_begin_gap'];
                                 }
+                            }
+
+                            if (!$now || !$now_unix || !$time_begin_gap || !$timestamp_begin_gap) {
+                                logit($logtarget, "Nothing to do for role $type");
+                                continue;
+                            }
+
+                            $difference_minutes = round(($now_unix / 60 - $timestamp_begin_gap / 60) + 1);
+                            logit($logtarget, "For role $type, we have gap information on this server for the past $difference_minutes minutes.");
+
+                            $gaps = array();
+
+                            $sql = "select * from tcat_error_gap where type = '$type' and start > '1970-01-01 01:01:00' and end < '$now' order by id, start asc";
+                            $rec = $dbh->prepare($sql);
+                            $rec->execute();
+                            $ignore_start = $already_recorded_until = null;
+                            $trust_minute_measurement = false;
+                            while ($row = $rec->fetch(PDO::FETCH_ASSOC)) {
+                                if ($row['start'] == $ignore_start) { continue; }
+                                // If we are being told about a gap we already know, skip it
+                                if ($already_recorded_until) {
+                                    $sql2 = "select '" . $row['start'] . "' > '$already_recorded_until'";
+                                    $rec2 = $dbh->prepare($sql2);
+                                    $rec2->execute();
+                                    $later_in_time = $rec2->fetchColumn();
+                                    if ($later_in_time != '1') {
+                                        // Not registering the gap starting at $row['start'] here, because it is already accounted for.
+                                        continue;
+                                    }
+                                }
+                                // If we know for a fact the minute measurement is accurate, we work with that precision, and otherwise
+                                // we try to attain it by searching the real capture data.
+                                if (!$trust_minute_measurement) {
+                                    $sql2 = "select '" . $row['start'] . "' > '$time_fixed_dateformat'";
+                                    $rec2 = $dbh->prepare($sql2);
+                                    $rec2->execute();
+                                    $later_in_time = $rec2->fetchColumn();
+                                    if ($later_in_time == '1') {
+                                        $trust_minute_measurement = true;
+                                    }
+                                }
+                                // The controller could create repeated rows with the same 'start' value if it didn't manage to boot up a role
+                                // The next query recognizes this.
+                                $sql2 = "select max(end) as max_end from tcat_error_gap where type = '$type' and start = '" . $row['start'] . "'";
+                                $rec2 = $dbh->prepare($sql2);
+                                $rec2->execute();
+                                $max_end = null;
+                                while ($row2 = $rec2->fetch(PDO::FETCH_ASSOC)) {
+                                    $max_end = $row2['max_end'];
+                                    break;
+                                }
+                                if ($max_end) {
+                                    // Example: '2016-04-19 03:12:44'
+                                    if (preg_match("/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/", $max_end, $matches_end) &&
+                                        preg_match("/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/", $row['start'], $matches_start)) {
+
+                                        if (!$trust_minute_measurement) {
+
+                                            // Drop a distrusted minute measurement due to previous dateformat bug
+                                            // This first defines the gap as wide as possible (with an hourly precision). Afterwards we prune it by searching the real capture data.
+
+                                            $matches_start[5] = '00';   // minutes start
+                                            $matches_start[6] = '00';   // seconds start
+                                            $matches_end[5] = '59';     // minutes end
+                                            $matches_end[6] = '59';     // seconds end
+
+                                            $new_start = $matches_start[1] . '-' . $matches_start[2] . '-' . $matches_start[3] . ' ' .
+                                                         $matches_start[4] . ':' . $matches_start[5] . ':' . $matches_start[6];
+                                            $new_end = $matches_end[1] . '-' . $matches_end[2] . '-' . $matches_end[3] . ' ' .
+                                                       $matches_end[4] . ':' . $matches_end[5] . ':' . $matches_end[6];
+
+                                            // Now attempt to reduce the gap size
+
+                                            $reduced = reduce_gap_size($type, $new_start, $new_end);
+                                            if (is_null($reduced)) {
+                                                logit($logtarget, "Erroneous gap report for role $type from '" . $new_start . "' to '" . $new_end . "'");
+                                            } else {
+                                                $new_start = $reduced['shrunk_start'];
+                                                $new_end = $reduced['shrunk_end'];
+                                            }
+
+                                        } else {
+
+                                            // Just copy both complete strings
+
+                                            $new_start = $matches_start[0];
+                                            $new_end = $matches_end[0];
+
+        //                                    logit($logtarget, "We trust the next recorded gap without search");
+
+                                        }
+
+                                        // logit($logtarget, "Detected possible gap from '" . $new_start . "' to '" . $new_end . "' - now investigating");
+                                        
+                                        logit($logtarget, "Recording gap for role $type from '" . $new_start . "' to '" . $new_end . "'");
+                                        $duplicate = false;
+                                        foreach ($gaps as $gap) {
+                                            if ($gap['start'] == $new_start && $gap['end'] == $new_end) {
+                                                $duplicate = true;
+                                            }
+                                        }
+                                        if (!$duplicate) {
+                                            $gap = array( 'start' => $new_start, 'end' => $new_end );
+                                            $gaps[] = $gap;
+                                        }
+
+                                        $ignore_start = $row['start'];
+                                        $already_recorded_until = $new_end;
+
+                                    }
+                                }
+                            }
+
+                            // By using a TRANSACTION block here, we ensure the tcat_error_gap will not end up in an undefined state
+
+                            $dbh->beginTransaction();
+
+                            $sql = "delete from tcat_error_gap where type = '$type' and end <= '$now'";
+                            $rec = $dbh->prepare($sql);
+                            $rec->execute();
+
+                            // Knit gap timespans togheter if they are absolutely sequential.
+
+                            $newgaps = array();
+                            $first = true;
+                            $previous_start = $previous_end = null;
+                            foreach ($gaps as $gap) {
+                                if ($first) {
+                                    $previous_start = $gap['start'];
+                                    $previous_end = $gap['end'];
+                                    $first = false;
+                                    continue;
+                                }
+                                $sql = "select timediff('" . $gap['start'] . "', '$previous_end') as difference";
                                 $rec = $dbh->prepare($sql);
-                                $i = 1;
-                                foreach ($subphrases as $subphrase) {
-                                    $regexp = "[[:<:]]" . $subphrase . "[[:>:]]";
-                                    $rec->bindParam($i, $regexp, PDO::PARAM_STR);
-                                    $i++;
-                                }
                                 $rec->execute();
-                            } else {
-                                // The user intends an exact string match here, such as: [ 'scottish independence' ]
-                                // Or the keyword string is a simple, single-word phrase
-                                $phrasematch = str_replace("'", "", $phrase);       // replace any occurances of the quoting character
-                                $sql = "REPLACE INTO tcat_captured_phrases ( tweet_id, phrase_id, created_at ) SELECT id, $phrase_id, created_at FROM " . quoteIdent($querybin . "_tweets") . " WHERE text REGEXP :regexp";
+                                $difference = null;
+                                while ($row = $rec->fetch(PDO::FETCH_ASSOC)) {
+                                    $difference = $row['difference'];
+                                    break;
+                                }
+                                // This one second difference will be produced by us widening an hourly measurement as much as possible
+                                // (and not finding any real tweet data to shrink it)
+                                if ($gap !== end($gaps) && isset($difference) && $difference == '00:00:01') {
+                                    // Keep on knittin'
+                                    $previous_end = $gap['end'];
+                                } else {
+                                    $newgaps[] = array ( 'start' => $previous_start, 'end' => $previous_end );
+                                    $previous_start = $gap['start'];
+                                    $previous_end = $gap['end'];
+                                }
+                            }
+                            // The knitting won't produce a result in a situation with only a single gap record
+                            if (count($gaps) > 1) {
+                                $gaps = $newgaps;
+                            }
+
+                            foreach ($gaps as $gap) {
+                                $sql = "insert into tcat_error_gap ( `type`, `start`, `end` ) values ( '$type', '" . $gap['start'] . "', '" . $gap['end'] . "' )";
                                 $rec = $dbh->prepare($sql);
-                                $regexp = "[[:<:]]" . $phrasematch . "[[:>:]]"; 
-                                $rec->bindParam(":regexp", $regexp, PDO::PARAM_STR);
                                 $rec->execute();
                             }
-                            // logit($logtarget, $sql);    // print SQL statements for debugging purposes
+
+                            // The final step is to prune tcap_error_gap to remove all gaps lesser than IDLETIME
+                            if (!defined('IDLETIME')) {
+                                define('IDLETIME', 600);
+                            }
+                            if (!defined('IDLETIME_FOLLOW')) {
+                                define('IDLETIME_FOLLOW', IDLETIME);
+                            }
+                            if ($type == 'follow') {
+                                $idletime = IDLETIME_FOLLOW;
+                            } else {
+                                $idletime = IDLETIME;
+                            }
+                            $sql = "delete from tcat_error_gap where time_to_sec(timediff(end,start)) < $idletime";
+                            $rec = $dbh->prepare($sql);
+                            $rec->execute();
+
+                            $dbh->commit();
+
                         }
+
+                        logit($logtarget, "Rebuilding of tcat_error_gap has finished");
+
+                        // For ratelimit exports to function, we want to have the tcat_captured_phrases table
+                        // As we have not recorded this (yet), we need to reconstruct it from the previous phrases and detect which tweets contain which queries.
+                        logit($logtarget, "Creating the tcat_captured_phrases table");
+
+                        create_admin();
+                        $trackbins = get_track_bin_phrases();
+
+                        foreach ($trackbins as $querybin => $phrases) {
+                            logit($logtarget, "Extracting keyword phrase matches from querybin $querybin and inserting into tcat_captured_phrases ..");
+                            foreach ($phrases as $phrase => $phrase_id) {
+                                if (substr($phrase, 0, 1) !== "'" && strpos($phrase, ' ') !== false) {
+                                    // The user intends a AND match here, such as: [ scottish AND independence ]
+                                    // Both words should be in the tweet, but not neccessarily next to each other ( according to the documentation: https://github.com/digitalmethodsinitiative/dmi-tcat/wiki/FAQ#keyword-track )
+                                    $subphrases = explode(' ', $phrase);
+                                    $sql = "REPLACE INTO tcat_captured_phrases ( tweet_id, phrase_id, created_at ) SELECT id, $phrase_id, created_at FROM " . quoteIdent($querybin . "_tweets") . " WHERE text REGEXP ?";
+                                    if (count($subphrases) > 1) {
+                                        $sql .= str_repeat(" AND text REGEXP ?", count($subphrases) - 1);
+                                    }
+                                    $rec = $dbh->prepare($sql);
+                                    $i = 1;
+                                    foreach ($subphrases as $subphrase) {
+                                        $regexp = "[[:<:]]" . $subphrase . "[[:>:]]";
+                                        $rec->bindParam($i, $regexp, PDO::PARAM_STR);
+                                        $i++;
+                                    }
+                                    $rec->execute();
+                                } else {
+                                    // The user intends an exact string match here, such as: [ 'scottish independence' ]
+                                    // Or the keyword string is a simple, single-word phrase
+                                    $phrasematch = str_replace("'", "", $phrase);       // replace any occurances of the quoting character
+                                    $sql = "REPLACE INTO tcat_captured_phrases ( tweet_id, phrase_id, created_at ) SELECT id, $phrase_id, created_at FROM " . quoteIdent($querybin . "_tweets") . " WHERE text REGEXP :regexp";
+                                    $rec = $dbh->prepare($sql);
+                                    $regexp = "[[:<:]]" . $phrasematch . "[[:>:]]"; 
+                                    $rec->bindParam(":regexp", $regexp, PDO::PARAM_STR);
+                                    $rec->execute();
+                                }
+                                // logit($logtarget, $sql);    // print SQL statements for debugging purposes
+                            }
+                        }
+
+                        // Indicate to the analytics panel we have fully executed this upgrade step and export functions can become available
+
+                        $sql = "update tcat_status set value = 2 where variable = 'ratelimit_database_rebuild'";
+                        $rec = $dbh->prepare($sql);
+                        $rec->execute();
+
                     }
-
-                    // Indicate to the analytics panel we have fully executed this upgrade step and export functions can become available
-
-                    $sql = "update tcat_status set value = 2 where variable = 'ratelimit_database_rebuild'";
-                    $rec = $dbh->prepare($sql);
-                    $rec->execute();
-
                 }
             }
         }
