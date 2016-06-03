@@ -9,6 +9,7 @@ if (!env_is_cli())
     die;
 
 include_once __DIR__ . '/../../config.php';
+include_once __DIR__ . '/../../common/constants.php';
 include __DIR__ . '/../../common/functions.php';
 include __DIR__ . '/../common/functions.php';
 

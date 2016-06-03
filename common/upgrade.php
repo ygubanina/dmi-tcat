@@ -24,6 +24,7 @@ function env_is_cli() {
 
 if (env_is_cli()) {
     include_once __DIR__ . '/../config.php';
+    include_once __DIR__ . '/../common/constants.php';
     include __DIR__ . '/functions.php';
     include __DIR__ . '/../capture/common/functions.php';
 }
@@ -642,10 +643,10 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
     } else {
      
         // The upgrade script will cause active tracking roles to restart; which may take up to a minute. Afterwards, we can expect the tcat_status table to exist and
-        // to have started recording ratelimit information in the new gauge style. Because it really neccessary to wait for the tracking roles to behave correctly,
+        // to have started recording timezone, gap and ratelimit information in the new gauge style. Because it really neccessary to wait for the tracking roles to behave correctly,
         // we decide to skip this upgrade step and inform the user.
            
-        logit($logtarget, "Your tracking roles are being restarted now (in the background) to record ratelimit and gap information in a newer style.");
+        logit($logtarget, "Your tracking roles are being restarted now (in the background) to record timezone, ratelimit and gap information in a newer style.");
         logit($logtarget, "Afterwards will we be able to re-assemble historical ratelimit and gap information, and new export modules can become available.");
         logit($logtarget, "Please wait at least one minute and then run this script again.");
 

@@ -1,14 +1,5 @@
 <?php
 
-/* Required constants for tcat_query_bins.access (TODO: move to common/constants.php?) */
-
-if (!defined('TCAT_QUERYBIN_ACCESS_OK')) {
-    define('TCAT_QUERYBIN_ACCESS_OK', 0);
-    define('TCAT_QUERYBIN_ACCESS_READONLY', 1);
-    define('TCAT_QUERYBIN_ACCESS_WRITEONLY', 2);
-    define('TCAT_QUERYBIN_ACCESS_INVISIBLE', 3);
-}
-
 require_once __DIR__ . '/geoPHP/geoPHP.inc'; // geoPHP library
 
 error_reporting(E_ALL);
@@ -466,7 +457,6 @@ function create_admin() {
         $rec->execute();
 
     }
-
 
     // 05/05/2016 Create a global lookup table to matching phrases to tweets
     // Thanks to this table we know how many (unique or non-unique) tweets were the result of querying the phrase.
@@ -2012,9 +2002,16 @@ function insert_captured_phrase_ids($captured_phrase_ids) {
  */
 
 function tracker_run() {
-    global $dbuser, $dbpass, $database, $hostname;
+    global $dbuser, $dbpass, $database, $hostname, $tweetQueue;
 
-    global $tweetQueue;
+    // We need the tcat_status table
+       
+    create_error_logs();
+
+    // We need the tcat_captured_phrases table
+
+    create_admin();
+
     $tweetQueue = new TweetQueue();
     $tweetQueue->setoption('replace', false);
     if (defined('USE_INSERT_DELAYED') && USE_INSERT_DELAYED) {
@@ -2025,14 +2022,6 @@ function tracker_run() {
     } else {
         $tweetQueue->setoption('ignore', true);
     }
-
-    // We need the tcat_status table
-       
-    create_error_logs();
-
-    // We need the tcat_captured_phrases table
-
-    create_admin();
 
     if (!defined("CAPTURE")) {
 
