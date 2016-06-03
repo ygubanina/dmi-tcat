@@ -81,12 +81,14 @@ function create_error_logs() {
     $test->execute();
     if ($test->rowCount() == 0 && defined('CAPTURE')) {
         // We are actively registering ratelimits in the new gauge-style and store the timestamp of the start of this new behaviour
+        // The purpose of this insert statemtn is for common/upgrade.php to know the exact time at which it can expect datetime insertion to be sane.
         $sql = "insert into tcat_status ( variable, value ) values ( 'ratelimit_format_modified_at', now() )";
         $insert = $dbh->prepare($sql);
         $insert->execute();
     }
     
-    // When creating tables for a fresh install, set tcat_status variable to indicate we have up-to-date ratelimit and gap tables
+    // When creating tables for a fresh install, set tcat_status variable to indicate we have up-to-date ratelimit, gap tables and are capturing in the proper timezone
+    // Practically, the purpose of this insert statement is for common/upgrade.php to know we do not need to upgrade the above table.
 
     if ($creating_tables_for_fresh_install) {
         $sql = "insert into tcat_status ( variable, value ) values ( 'ratelimit_database_rebuild', 2 )";

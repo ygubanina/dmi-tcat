@@ -137,12 +137,6 @@ require_once __DIR__ . '/common/CSV.class.php';
          *                                            total unique tweets with matches    (B)
          */
 
-        // TODO: Whenever the config.php time was not set to UTC and did not match the server time, the created_at in the _tweets table may be misaligned.
-        //       See https://github.com/digitalmethodsinitiative/dmi-tcat/issues/197
-        //       While this is not specifically a rate limit related issue, it may pose an extra challange here, because we are joining with a datetime table (tcat_error_ratelimit)
-        //       which does not suffer from this problem. Currently we do not suggest a solution here.
-        //       Probably a clever invocation of convert_tz() inside $sqlInterval could help to re-align the data, here and elsewhere?
-
         $sqlIntervalForRL = str_replace("t.created_at", "start", $sqlInterval);
         $sql_query_a = "SELECT SUM(tweets) as ratelimited, $sqlIntervalForRL FROM tcat_error_ratelimit WHERE start >= '" . $esc['datetime']['startdate'] . "' AND end <= '" . $esc['datetime']['enddate'] . "' $sqlGroup";
 
