@@ -28,6 +28,14 @@ if (dbserver_has_utf8mb4_support() == false) {
 $dbh = pdo_connect();
 $roles = unserialize(CAPTUREROLES);
 
+// We need the tcat_status table
+   
+create_error_logs();
+
+// We need the tcat_captured_phrases table
+
+create_admin();
+
 // first gather all instructions sent by the webinterface to the controller (ie. the instruction queue)
 $upgrade_requested = false;
 $commands = array();
