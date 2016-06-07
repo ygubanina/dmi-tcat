@@ -762,7 +762,7 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                          *       Here:  https://github.com/digitalmethodsinitiative/dmi-tcat/issues/197
                          *       And here: https://github.com/digitalmethodsinitiative/dmi-tcat/pull/194
                          */
-                        $sql = "SELECT id FROM `$tweets_table` WHERE CONVERT_TZ(created_at, '$badzone', 'UTC') < '$now' ORDER BY CONVERT_TZ(created_at, '$badzone', 'UTC') DESC LIMIT 1";
+                        $sql = "SELECT id FROM `$tweets_table` WHERE CONVERT_TZ(created_at, '$badzone', 'UTC') <= '$now' ORDER BY CONVERT_TZ(created_at, '$badzone', 'UTC') DESC LIMIT 1";
                         logit($logtarget, "$sql");
                         $rec2 = $dbh->prepare($sql);
                         $rec2->execute();
