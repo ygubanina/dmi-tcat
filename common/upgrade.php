@@ -758,11 +758,11 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                             $badzone = TCAT_CONFIG_DEPRECATED_TIMEZONE_CONFIGURED;
                         }
                         /*
-                         * NOTE: The MySQL native function CONVERT_TZ(datetimestring, 'UTC', 'badtimezone') helps to undo the bug described
+                         * NOTE: The MySQL native function CONVERT_TZ(datetimestring, 'badtimezone', 'UTC') helps to undo the bug described
                          *       Here:  https://github.com/digitalmethodsinitiative/dmi-tcat/issues/197
                          *       And here: https://github.com/digitalmethodsinitiative/dmi-tcat/pull/194
                          */
-                        $sql = "SELECT id FROM `$tweets_table` WHERE CONVERT_TZ(created_at, 'UTC', '$badzone') < '$now' ORDER BY CONVERT_TZ(created_at, 'UTC', '$badzone') DESC LIMIT 1";
+                        $sql = "SELECT id FROM `$tweets_table` WHERE CONVERT_TZ(created_at, '$badzone', 'UTC') < '$now' ORDER BY CONVERT_TZ(created_at, '$badzone', 'UTC') DESC LIMIT 1";
                         logit($logtarget, "$sql");
                         $rec2 = $dbh->prepare($sql);
                         $rec2->execute();
@@ -789,7 +789,7 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                             $rec2->bindParam(":querybin", $binname, PDO::PARAM_STR);
                             $rec2->execute();
                         }
-                        $sql = "UPDATE `$tweets_table` SET created_at = CONVERT_TZ(created_at, 'UTC', '$badzone') WHERE id <= $max_id";
+                        $sql = "UPDATE `$tweets_table` SET created_at = CONVERT_TZ(created_at, '$badzone', 'UTC') WHERE id <= $max_id";
                         logit($logtarget, "$sql");
                         $rec2 = $dbh->prepare($sql);
                         $rec2->execute();
@@ -826,7 +826,7 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
 
                         // Fix issue described here https://github.com/digitalmethodsinitiative/dmi-tcat/issues/197
 
-                        $sql = "SELECT id FROM tcat_error_ratelimit WHERE CONVERT_TZ(end, 'UTC', '$badzone') < '$now' ORDER BY CONVERT_TZ(end, 'UTC', '$badzone') DESC LIMIT 1";
+                        $sql = "SELECT id FROM tcat_error_ratelimit WHERE CONVERT_TZ(end, '$badzone', 'UTC') < '$now' ORDER BY CONVERT_TZ(end, '$badzone', 'UTC') DESC LIMIT 1";
                         logit($logtarget, "$sql");
                         $rec2 = $dbh->prepare($sql);
                         $rec2->execute();
@@ -836,7 +836,7 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                             $max_id = 0;        // table is empty.
                         }
                         $dbh->beginTransaction();
-                        $sql = "UPDATE tcat_error_ratelimit SET start = CONVERT_TZ(start, 'UTC', '$badzone'), end = CONVERT_TZ(end, 'UTC', '$badzone') WHERE id <= $max_id";
+                        $sql = "UPDATE tcat_error_ratelimit SET start = CONVERT_TZ(start, '$badzone', 'UTC'), end = CONVERT_TZ(end, '$badzone', 'UTC') WHERE id <= $max_id";
                         logit($logtarget, "$sql");
                         $rec2 = $dbh->prepare($sql);
                         $rec2->execute();
@@ -1091,7 +1091,7 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
 
                         // Fix issue described here https://github.com/digitalmethodsinitiative/dmi-tcat/issues/197
 
-                        $sql = "SELECT id FROM tcat_error_gap WHERE CONVERT_TZ(end, 'UTC', '$badzone') < '$now' ORDER BY CONVERT_TZ(end, 'UTC', '$badzone') DESC LIMIT 1";
+                        $sql = "SELECT id FROM tcat_error_gap WHERE CONVERT_TZ(end, '$badzone', 'UTC') < '$now' ORDER BY CONVERT_TZ(end, '$badzone', 'UTC') DESC LIMIT 1";
                         logit($logtarget, "$sql");
                         $rec2 = $dbh->prepare($sql);
                         $rec2->execute();
@@ -1101,7 +1101,7 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                             $max_id = 0;        // table is empty.
                         }
                         $dbh->beginTransaction();
-                        $sql = "UPDATE tcat_error_gap SET start = CONVERT_TZ(start, 'UTC', '$badzone'), end = CONVERT_TZ(end, 'UTC', '$badzone') WHERE id <= $max_id";
+                        $sql = "UPDATE tcat_error_gap SET start = CONVERT_TZ(start, '$badzone', 'UTC'), end = CONVERT_TZ(end, '$badzone', 'UTC') WHERE id <= $max_id";
                         logit($logtarget, "$sql");
                         $rec2 = $dbh->prepare($sql);
                         $rec2->execute();
