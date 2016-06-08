@@ -736,6 +736,8 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                             $rec2->bindParam(":querybin", $binname, PDO::PARAM_STR);
                             $rec2->execute();
                         }
+                        $dbh->commit();
+                        $dbh->beginTransaction();
                         $sql = "UPDATE `$tweets_table` SET created_at = CONVERT_TZ(created_at, '$badzone', 'UTC') WHERE id <= $max_id";
                         logit($logtarget, "$sql");
                         $rec2 = $dbh->prepare($sql);
