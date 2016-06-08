@@ -29,10 +29,6 @@ require_once __DIR__ . '/common/CSV.class.php';
         <?php
         validate_all_variables();
 
-        // We tell MySQL we want to work within the same timezone as the PHP timezone defined in config.php.
-        // An issue described here (https://github.com/digitalmethodsinitiative/dmi-tcat/issues/197) which awaits a generalized solution
-        mysql_query("SET time_zone='" . date_default_timezone_get() . "'");
-
         // make filename and open file for write
         $module = "gapData";
         $sql = "SELECT id, `type` FROM tcat_query_bins WHERE querybin = '" . mysql_real_escape_string($esc['mysql']['dataset']) . "'";
