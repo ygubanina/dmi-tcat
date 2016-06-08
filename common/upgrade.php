@@ -665,7 +665,7 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                     $ans = 'SKIP';
                 }
             } else {
-                $ans = cli_yesnoall("Re-assemble historical TCAT tweet time zone, ratelimit and gap information to keep appropriate records. It will take quite a while on long-running servers, though the majority of operations are non-blocking. The upgrade procedure will temporarily render bins being upgraded invisible in the front-end.", 2);
+                $ans = cli_yesnoall("Re-assemble historical TCAT tweet time zone, ratelimit and gap information to keep appropriate records. It will take quite a while on long-running servers, though the majority of operations are non-blocking. If you have some very big bins (with 70+ million tweets inside them), you may wish to explore the USE_INSERT_DELAYED option in config.php and restart your trackers before running this upgrade. The upgrade procedure will temporarily render bins being upgraded invisible in the front-end.", 2);
             }
             if ($ans == 'y' || $ans == 'a') {
                 
