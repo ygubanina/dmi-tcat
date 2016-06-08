@@ -1353,6 +1353,8 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                         $sql = "update tcat_status set value = 2 where variable = 'ratelimit_database_rebuild'";
                         $rec = $dbh->prepare($sql);
                         $rec->execute();
+                        
+                        logit($logtarget, "Phrases table successfully built. Gap and ratelimit export features have now been unlocked.");
 
                     }
                 }
@@ -1393,7 +1395,7 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
             if ($update && $dry_run) {
                 $suggested = true;
             }
-            if ($update) {
+            if ($update && $dry_run == false) {
                 if ($ans !== 'a') {
                     $ans = cli_yesnoall("Fixing index of tweet_id on table $v", 0, '2f1c585fac9e2646951bb44f61e864f4488a37e6');
                 }

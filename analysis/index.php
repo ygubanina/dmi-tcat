@@ -251,11 +251,11 @@ if (defined('ANALYSIS_URL'))
                             </tr>
                         <?php } ?>
                         <tr>
-                            <td class="tbl_head">Startdate:</td><td><input type="text" id="ipt_startdate" size="60" name="startdate" value="<?php echo $startdate; ?>" /> (YYYY-MM-DD or YYYY-MM-DD HH:MM:SS)</td>
+                            <td class="tbl_head">Startdate (UTC):</td><td><input type="text" id="ipt_startdate" size="60" name="startdate" value="<?php echo $startdate; ?>" /> (YYYY-MM-DD or YYYY-MM-DD HH:MM:SS)</td>
                         </tr>
 
                         <tr>
-                            <td class="tbl_head">Enddate:</td><td><input type="text" id="ipt_enddate" size="60" name="enddate" value="<?php echo $enddate; ?>" /> (YYYY-MM-DD or YYYY-MM-DD HH:MM:SS)</td>
+                            <td class="tbl_head">Enddate (UTC):</td><td><input type="text" id="ipt_enddate" size="60" name="enddate" value="<?php echo $enddate; ?>" /> (YYYY-MM-DD or YYYY-MM-DD HH:MM:SS)</td>
                         </tr>
                         <tr>
                             <td valign="middle" style='padding-top: 4px'><input type="submit" value="update overview" /></td>
