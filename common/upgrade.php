@@ -65,59 +65,6 @@ function cli_yesnoall($update, $time_indication = 1, $commit = null) {
     }
 }
 
-/*
- * This function imports the MySQL timezone data neccessary to make the convert_tz() function work. On Debian/Ubuntu systems the timezone data is not
- * loaded by default, as is evident from the result of the following query, which unexpectedly is NULL:
- * SELECT convert_tz(now(), 'SYSTEM', 'UTC');
- *
- * Our function first tests (quickly) whether timezone data is available, and otherwise imports it.
- *
- * See also: http://stackoverflow.com/questions/9808160/mysql-time-zones
- */
-function import_mysql_timezone_data() {
-    global $dbuser, $dbpass, $database, $hostname;
-
-    $dbh = pdo_connect();
-
-    $sql = "SELECT convert_tz(now(), 'SYSTEM', 'UTC') as available";
-    $test = $dbh->prepare($sql);
-    $test->execute();
-    if ($res = $test->fetch()) {
-        if (array_key_exists('available', $res) && is_string($res['available'])) {
-            return true;    // we already have the timezone data
-        }
-    }
-    if (!file_exists('/usr/share/zoneinfo') || !is_executable('/usr/bin/mysql_tzinfo_to_sql')) {
-        return false;       // we cannot import timezone data (unknown OS?)
-    }
-
-    // Connect to MySQL meta information database
-    try {
-        $dbh_mysql = new PDO("mysql:host=$hostname;dbname=mysql;charset=utf8mb4", $dbuser, $dbpass, array(PDO::MYSQL_ATTR_INIT_COMMAND => "set sql_mode='ALLOW_INVALID_DATES'"));
-    } catch (Exception $e) {
-        if ($e->getCode() == 1044) {
-            // Access denied (probably the connecting user does not have sufficient privileges)
-            return false;
-        }
-    }
-    $dbh_mysql->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-
-    // Run the MySQL tool to convert Unix timezones into MySQL format, read its output using popen()
-    // and then execute its output as a query. We could opt for piping directly to the mysql command line tool,
-    // but this is probably a bit more secure (no need to transfer passwords to the command-line)
-    $cmdhandle = popen("/usr/bin/mysql_tzinfo_to_sql /usr/share/zoneinfo", "r");
-    $query = "";
-    while ($buf = fread($cmdhandle, 2048)) {
-        $query .= $buf;
-    }
-    pclose($cmdhandle);
-    $import = $dbh_mysql->prepare($query);
-    $import->execute();
-    return true;
-}
-
-
-
 /**
  * Check for possible upgrades to the TCAT database.
  *
@@ -735,7 +682,7 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                     logit($logtarget, "ERROR -");
                     logit($logtarget, "ERROR - For Debian or Ubuntu systems, become root (using sudo su) and execute the following command:");
                     logit($logtarget, "ERROR -");
-                    logit($logtarget, "ERROR - /usr/bin/mysql_tzinfo_to_sql /usr/share/zoneinfo | sudo mysql -u debian-sys-maint -p`cat /etc/mysql/debian.cnf | grep -e \"password\" | head -n 1 | sed -e 's/^password = //'` mysql");
+                    logit($logtarget, "ERROR - /usr/bin/mysql_tzinfo_to_sql /usr/share/zoneinfo | mysql --defaults-file=/etc/mysql/debian.cnf -u debian-sys-maint mysql");
                     logit($logtarget, "ERROR -");
                     logit($logtarget, "ERROR - (you can safely ignore the line: Warning: Unable to load '/usr/share/zoneinfo/leap-seconds.list' as time zone. Skipping it.')");
                     logit($logtarget, "ERROR -");
@@ -1410,6 +1357,10 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
     }
 
     // End of upgrades
+
+    if ($required == true && $suggested == true) {
+        $required = true; $suggested = false;       // only return the strongest option
+    }
 
     if ($dry_run) {
         return array( 'suggested' => $suggested, 'required' => $required );

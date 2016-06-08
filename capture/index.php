@@ -126,6 +126,13 @@ $lastRateLimitHit = getLastRateLimitHit();
         }
         $git = getGitLocal();
         $showupdatemsg = false;
+        if (defined('AUTOUPDATE_ENABLED') && AUTOUPDATE_ENABLED == true && import_mysql_timezone_data() == false) {
+            if (!$showupdatemsg) {
+                print '<div id="updatewarning">';
+                print "You have configured TCAT to automatically upgrade in the background. However, a specific upgrade instruction requires MySQL root privileges and cannot be run by TCAT itself. You will need to install the MySQL Time Zone Support manually using instructions provided here:<br/><br/><a href=\"https://dev.mysql.com/doc/refman/5.5/en/time-zone-support.html\" target=_blank>https://dev.mysql.com/doc/refman/5.5/en/time-zone-support.html</a><br/><br/>For <i>Debian</i> or <i>Ubuntu Linux</i> systems, the following command, issued as root (use sudo su to become root), will install the neccessary time zone data.<br/></br>/usr/bin/mysql_tzinfo_to_sql /usr/share/zoneinfo | mysql --defaults-file=/etc/mysql/debian.cnf -u debian-sys-maint mysql</br>";
+            }
+            $showupdatemsg = true;
+        }
         if (is_array($git)) {
             $remote = getGitRemote($git['commit'], $git['branch']);
             if (is_array($remote)) {
@@ -136,7 +143,9 @@ $lastRateLimitHit = getLastRateLimitHit();
                     $url = $remote['url'];
                     $required = $remote['required'];
                     $autoupgrade = 'autoupgrade()';
-                    print '<div id="updatewarning">';
+                    if (!$showupdatemsg) {
+                        print '<div id="updatewarning">';
+                    }
                     $wikilink = 'https://github.com/digitalmethodsinitiative/dmi-tcat/wiki/Upgrading-TCAT';
                     if ($required) {
                         print "A newer version of TCAT is available, containing important updates. You are strongly recommended to upgrade. Please read the <a href='$wikilink' target='_blank'>documentation</a> for instructions on upgrading, or click <a href='#' onclick='$autoupgrade'>here</a> to schedule an automatic upgrade. [ commit <a href='$url' target='_blank'>$commit</a> - $mesg ]<br>";
