@@ -1001,6 +1001,9 @@ else
     exit 3
 fi
 
+# Install MySQL server timezone data
+mysql_tzinfo_to_sql /usr/share/zoneinfo | mysql --defaults-file="$MYSQL_USER_ADMIN_CNF" mysql 
+
 echo ""
 tput bold
 echo "Downloading DMI-TCAT from github ..."
