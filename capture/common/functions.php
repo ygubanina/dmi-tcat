@@ -1,6 +1,7 @@
 <?php
 
 require_once __DIR__ . '/geoPHP/geoPHP.inc'; // geoPHP library
+require_once __DIR__ . '/../../common/constants.php'; // include constants file
 
 error_reporting(E_ALL);
 ini_set("max_execution_time", 0);       // capture script want unlimited execution time
@@ -8,7 +9,8 @@ ini_set("max_execution_time", 0);       // capture script want unlimited executi
 function pdo_connect() {
     global $dbuser, $dbpass, $database, $hostname;
 
-    $dbh = new PDO("mysql:host=$hostname;dbname=$database;charset=utf8mb4", $dbuser, $dbpass, array(PDO::MYSQL_ATTR_INIT_COMMAND => "set sql_mode='ALLOW_INVALID_DATES';set time_zone='UTC'"));
+    $dbh = new PDO("mysql:host=$hostname;dbname=$database;charset=utf8mb4", $dbuser, $dbpass, array(PDO::MYSQL_ATTR_INIT_COMMAND => "set sql_mode='ALLOW_INVALID_DATES';set time_zone='+00:00'
+"));
     $dbh->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
     return $dbh;

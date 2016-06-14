@@ -14,13 +14,16 @@ if (!defined('TCAT_QUERYBIN_ACCESS_OK')) {
 // Always make UTC the default timezone inside PHP
 // This effectively ignores any date_default_timezone_set() in config.php (which is deprecated)
 
-$current_timezone = date_default_timezone_get();
-if ($current_timezone !== 'UTC') {
-    define('TCAT_CONFIG_DEPRECATED_TIMEZONE', 1);
-    define('TCAT_CONFIG_DEPRECATED_TIMEZONE_CONFIGURED', $current_timezone);
-    date_default_timezone_set('UTC');
-} else {
-    define('TCAT_CONFIG_DEPRECATED_TIMEZONE', 0);
-    define('TCAT_CONFIG_DEPRECATED_TIMEZONE_CONFIGURED', '');
-}
+if (!defined('TCAT_CONFIG_DEPRECATED_TIMEZONE')) {
 
+    $current_timezone = date_default_timezone_get();
+    if ($current_timezone !== 'UTC') {
+        define('TCAT_CONFIG_DEPRECATED_TIMEZONE', 1);
+        define('TCAT_CONFIG_DEPRECATED_TIMEZONE_CONFIGURED', $current_timezone);
+        date_default_timezone_set('UTC');
+    } else {
+        define('TCAT_CONFIG_DEPRECATED_TIMEZONE', 0);
+        define('TCAT_CONFIG_DEPRECATED_TIMEZONE_CONFIGURED', '');
+    }
+
+}
