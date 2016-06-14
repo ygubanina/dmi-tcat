@@ -682,7 +682,7 @@ function upgrades($dry_run = false, $interactive = true, $aulevel = 2, $single =
                     logit($logtarget, "ERROR -");
                     logit($logtarget, "ERROR - For Debian or Ubuntu systems, become root (using sudo su) and execute the following command:");
                     logit($logtarget, "ERROR -");
-                    logit($logtarget, "ERROR - /usr/bin/mysql_tzinfo_to_sql /usr/share/zoneinfo | mysql --force --defaults-file=/etc/mysql/debian.cnf -u debian-sys-maint mysql");
+                    logit($logtarget, "ERROR - /usr/bin/mysql_tzinfo_to_sql /usr/share/zoneinfo | mysql --defaults-file=/etc/mysql/debian.cnf --force -u debian-sys-maint mysql");
                     logit($logtarget, "ERROR -");
                     logit($logtarget, "ERROR - (you can safely ignore the line: Warning: Unable to load '/usr/share/zoneinfo/leap-seconds.list' as time zone. Skipping it.')");
                     logit($logtarget, "ERROR -");
